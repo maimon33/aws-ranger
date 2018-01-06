@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import logging
 
@@ -22,7 +23,9 @@ def _config():
     AWS_ACCESS_KEY_ID=raw_input('Enter Your AWS Access Key ID : ')
     AWS_SECRET_ACCESS_KEY=raw_input('Enter Your AWS Secret Access Key : ')
     AWS_ACCOUNT_ALIAS=raw_input('Enter an Alias for the Account: ')
-    config = {"aws-account": {'AWS_ACCOUNT_ALIAS': AWS_ACCOUNT_ALIAS, 'AWS_ACCESS_KEY_ID': AWS_ACCESS_KEY_ID, 'AWS_SECRET_ACCESS_KEY': AWS_SECRET_ACCESS_KEY}}
+    config = {"aws-account": {'AWS_ACCOUNT_ALIAS': AWS_ACCOUNT_ALIAS,
+                              'AWS_ACCESS_KEY_ID': AWS_ACCESS_KEY_ID, 
+                              'AWS_SECRET_ACCESS_KEY': AWS_SECRET_ACCESS_KEY}}
     with open('{}/{}.json'.format(CONF_DIR, AWS_ACCOUNT_ALIAS), 'w') as f:
         json.dump(config, f)
     global CONFIG_PATH
@@ -66,7 +69,6 @@ def create_short_instances_dict(all_instances_dictionary):
     return instance_dict
 
 class aws_ranger():    
-
     def __init__(self):
         ACCESS_KEY = cfg['AWS_ACCESS_KEY_ID']
         self.ACCESS_KEY = ACCESS_KEY
@@ -74,7 +76,10 @@ class aws_ranger():
         SECRET_KEY = cfg['AWS_SECRET_ACCESS_KEY']
         self.SECRET_KEY = SECRET_KEY
 
-    def aws_client(self, resource=True, region_name='eu-west-1', aws_service='ec2'):
+    def aws_client(self, 
+                   resource=True, 
+                   region_name='eu-west-1', 
+                   aws_service='ec2'):
         if resource:
             return boto3.resource(aws_service,
                                     aws_access_key_id=self.ACCESS_KEY,
@@ -94,7 +99,7 @@ class aws_ranger():
             region_list.append(region_api_id)
         return region_list
 
-    def get_running_instances(self, region=False):
+    def get_instances(self, instances_state="running", region=False):
         all_instances = []
         region_list = []
 
@@ -108,7 +113,9 @@ class aws_ranger():
         for region in region_list:
             instance_list = []
             region_inventory = {}
-            instances = self.aws_client(region_name=region).instances.filter(Filters=[{'Name': 'instance-state-name', 'Values': ['running']}])
+            instances = self.aws_client(region_name=region).instances.filter(
+                Filters=[{'Name': 'instance-state-name',
+                          'Values': [instances_state]}])
             for instance in instances:
                 instance_dict = {}
                 instance_dict['ID'] = instance.id
@@ -122,7 +129,14 @@ class aws_ranger():
         return all_instances
 
     def stop_instnace(self, instance_list, region=False):
-        self.aws_client(region_name=region).instances.filter(InstanceIds=instance_list).stop()
+        for instance in instance_list:            
+            self.aws_client(region_name=region).instances.filter(
+                InstanceIds=instance).stop()
+
+    def terminate_instnace(self, instance_list, region=False):
+        for instance in instance_list:
+            self.aws_client(region_name=region).instances.filter(
+                InstanceIds=instance_list).terminate()
 
 
 CLICK_CONTEXT_SETTINGS = dict(
@@ -130,12 +144,9 @@ CLICK_CONTEXT_SETTINGS = dict(
     token_normalize_func=lambda param: param.lower(),
     ignore_unknown_options=True)
 
-@click.command(context_settings=CLICK_CONTEXT_SETTINGS)
-@click.argument('region', default=False)
-@click.option('-s',
-              '--server',
-              is_flag=True,
-              help='Send the Ranger to Background')
+@click.group(invoke_without_command=True, 
+             context_settings=CLICK_CONTEXT_SETTINGS)
+@click.pass_context
 @click.option('-v',
               '--verbose',
               is_flag=True,
@@ -144,24 +155,63 @@ CLICK_CONTEXT_SETTINGS = dict(
               '--debug',
               is_flag=True,
               help="debug new features")
-def ranger(distro, server, verbose, debug):
+def ranger(ctx, verbose, debug):
     """Round up your AWS instances
+
+    Scout for Instances in all AWS Regions
     """
     ranger = aws_ranger()
     
     if debug:
-        print "Hi"
-        find_ami()
         sys.exit()
     if verbose:
         logger.setLevel(logging.DEBUG)
-    if server:
-        # Impliment serv machenizem
-        pass
-    else:
-        instances = ranger.get_running_instances()
+    
+    if ctx.invoked_subcommand is None:
+        instances = ranger.get_instances()
         print instances
-        stop_list = create_short_instances_dict(instances)
-        print stop_list
-        # for k, v in stop_list.items():
-        #     ranger.stop_instnace(v, region=k)
+    else:
+        pass
+
+@ranger.command('stop')
+@click.argument('region', default=False)
+@click.option('-s',
+              '--server',
+              is_flag=True,
+              help='Send the Ranger to Background')
+def stop(region, server):
+    """Stop instances Found by aws-ranger
+    """
+    ranger = aws_ranger()
+    if server:
+        # TODO: Impliment serv machenizem
+        logger.info('Still not working')
+        sys.exit()
+    instances = ranger.get_instances()
+    stop_list = create_short_instances_dict(instances)
+    for k, v in stop_list.items():
+        ranger.stop_instnace(v, region=k)
+
+@ranger.command('terminate')
+@click.argument('region', default=False)
+@click.option('-s',
+              '--server',
+              is_flag=True,
+              help='Send the Ranger to Background')
+def terminate(region, server):
+    """Terminate instances Found by aws-ranger
+    """
+    ranger = aws_ranger()
+    if server:
+        # TODO: Impliment serv machenizem
+        logger.info('Still not working')
+        sys.exit()
+    instances = ranger.get_instances()
+    stop_list = create_short_instances_dict(instances)
+    for k, v in stop_list.items():
+        ranger.terminate_instnace(v, region=k)
+
+    instances = ranger.get_instances(instances_state="stopped")
+    stop_list = create_short_instances_dict(instances)
+    for k, v in stop_list.items():
+        ranger.terminate_instnace(v, region=k)
