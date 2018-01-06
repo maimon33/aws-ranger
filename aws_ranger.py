@@ -14,31 +14,45 @@ logger.setLevel(logging.INFO)
 console = logging.StreamHandler()
 logger.addHandler(console)
 
+HOME_DIR = '{0}/.aws-ranger'.format(os.getenv("HOME"))
+CONF_DIR = '{0}/aws-creds'.format(HOME_DIR)
 
-CONFIG_PATH = '{0}/.aws-ranger/aws-creds/{1}.json'.format(os.getenv("HOME"), 'aws')
+def _config():
+    logger.info('Please provide AWS Credentials')
+    AWS_ACCESS_KEY_ID=raw_input('Enter Your AWS Access Key ID : ')
+    AWS_SECRET_ACCESS_KEY=raw_input('Enter Your AWS Secret Access Key : ')
+    AWS_ACCOUNT_ALIAS=raw_input('Enter an Alias for the Account: ')
+    config = {"aws-account": {'AWS_ACCOUNT_ALIAS': AWS_ACCOUNT_ALIAS, 'AWS_ACCESS_KEY_ID': AWS_ACCESS_KEY_ID, 'AWS_SECRET_ACCESS_KEY': AWS_SECRET_ACCESS_KEY}}
+    with open('{}/{}.json'.format(CONF_DIR, AWS_ACCOUNT_ALIAS), 'w') as f:
+        json.dump(config, f)
+    global CONFIG_PATH
+    CONFIG_PATH = '{}/{}.json'.format(CONF_DIR, AWS_ACCOUNT_ALIAS)
 
 try:
-    if not os.path.exists('{0}/.aws-ranger/aws-creds'.format(os.getenv("HOME"))):
-        os.makedirs('{0}/.aws-ranger/aws-creds'.format(os.getenv("HOME")))
+    if not os.path.exists(CONF_DIR):
+        os.makedirs(CONF_DIR)
 except OSError:
-    print "Error Creating config folder"
+    logger.warning('Error Creating config folder')
+
+try:
+    if os.listdir(CONF_DIR) == []:
+        raise NameError
+    for file in os.listdir(CONF_DIR):
+        if file.endswith(".json"):
+            global CONFIG_PATH
+            CONFIG_PATH = '{}/{}'.format(CONF_DIR, file)
+        with open(CONFIG_PATH) as config_file:
+            cfg = json.load(config_file)["aws-account"]
+except NameError:
+    logger.info('Needs to be configured first')
+    _config()
+    with open(CONFIG_PATH) as config_file:
+        cfg = json.load(config_file)["aws-account"]
+
+CONFIG_PATH = '{0}/{1}.json'.format(CONF_DIR, cfg['AWS_ACCOUNT_ALIAS'])
 
 def _format_json(dictionary):
     return json.dumps(dictionary, indent=4, sort_keys=True)
-
-def _config():
-    print "Please provide Authentication details"
-    AWS_ACCESS_KEY_ID=raw_input('Enter Your Gmail Account Name : ')
-    AWS_SECRET_ACCESS_KEY=raw_input('Enter Your Gmail Account Password : ')
-    config = {"aws-account": {'AWS_ACCESS_KEY_ID': AWS_ACCESS_KEY_ID, 'AWS_SECRET_ACCESS_KEY': AWS_SECRET_ACCESS_KEY}}
-    with open(CONFIG_PATH, 'w') as f:
-        json.dump(config, f)
-        
-if os.path.isfile(CONFIG_PATH):
-    pass
-else:
-    print "Missing AWS creds"
-    _config()
 
 def create_short_instances_dict(all_instances_dictionary):
     instance_dict ={}
@@ -54,9 +68,6 @@ def create_short_instances_dict(all_instances_dictionary):
 class aws_ranger():    
 
     def __init__(self):
-        with open(CONFIG_PATH) as config_file:
-            cfg = json.load(config_file)["aws-account"]
-
         ACCESS_KEY = cfg['AWS_ACCESS_KEY_ID']
         self.ACCESS_KEY = ACCESS_KEY
 
@@ -124,7 +135,7 @@ CLICK_CONTEXT_SETTINGS = dict(
 @click.option('-s',
               '--server',
               is_flag=True,
-              help='Send the Ranger to Background?')
+              help='Send the Ranger to Background')
 @click.option('-v',
               '--verbose',
               is_flag=True,
