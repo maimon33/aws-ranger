@@ -6,9 +6,12 @@ Some features are not fully operational yet
 The tool to help you get a handle on your AWS accounts.
 
 To start using just type: `aws-ranger`.<br>
-This will prompt for you AWS creds and account alias of your choice and map your entire account.
+This will prompt for your AWS creds and account alias of your choice and map your entire account.
 
 You later could run it again but with an action stop | terminate
+
+#### Install
+`pip install https://github.com/maimon33/aws-ranger/archive/master.zip`
 
 #### Server mode
 
