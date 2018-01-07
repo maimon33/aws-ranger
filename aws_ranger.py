@@ -150,24 +150,16 @@ class scheduler():
     current = date.today().strftime('%d/%m/%y %H:%M')
     dt = datetime.strptime(current, "%d/%m/%y %H:%M")
     START_OF_DAY = datetime.combine(date.today(),
-                                    time(9, 00)).strftime('%d/%m/%y %H:%M')
+                                    time(9, 00))
     END_OF_DAY = datetime.combine(date.today(), 
-                                  time(18, 00)).strftime('%d/%m/%y %H:%M')
+                                  time(18, 00))
     START_OF_WEEK = dt - timedelta(days=dt.weekday()-1)
     LAST_DAY_OF_WEEK = START_OF_WEEK + timedelta(days=4)
 
-    # def __init__(self):
-    #     pass
-    # pass
-
-    def get_seconds_difference(self):
-        current = date.today().strftime('%d/%m/%y %H:%M')
-        dt = datetime.strptime(current, "%d/%m/%y %H:%M")
-        start = dt - timedelta(days=dt.weekday()-1)
-        end = start + timedelta(days=4)
-        print dt
-        print(start)
-        print(end)
+    def get_seconds_difference(self, target_datetime):
+        now = datetime.now()
+        seconds = (target_datetime - now).seconds
+        return seconds
         
 
 CLICK_CONTEXT_SETTINGS = dict(
