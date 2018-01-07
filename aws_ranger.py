@@ -30,12 +30,11 @@ def _config():
     config = {"aws-account": {'AWS_ACCOUNT_ALIAS': AWS_ACCOUNT_ALIAS,
                               'AWS_ACCESS_KEY_ID': AWS_ACCESS_KEY_ID, 
                               'AWS_SECRET_ACCESS_KEY': AWS_SECRET_ACCESS_KEY}}
-    with open('{0}/{1}.json'.format(CONF_DIR, AWS_ACCOUNT_ALIAS), 'w') as f:
-        json.dump(config, f, indent=4)
+    with open('{0}/{1}.json'.format(CONF_DIR, AWS_ACCOUNT_ALIAS), 'w') as file:
+        json.dump(config, file, indent=4)
     
     global CONFIG_PATH
     CONFIG_PATH = '{0}/{1}.json'.format(CONF_DIR, AWS_ACCOUNT_ALIAS)
-
 
 try:
     if not os.path.exists(CONF_DIR):
@@ -61,6 +60,8 @@ except NameError:
 CONFIG_PATH = '{0}/{1}.json'.format(CONF_DIR, cfg['AWS_ACCOUNT_ALIAS'])
 STATE_FILE = '{0}/{1}.state'.format(HOME_DIR, cfg['AWS_ACCOUNT_ALIAS'])
 
+TAGS_EXCLUDE_KEY_WORDS = ["Prod", "Production", "Do Not Stop"]
+
 def _format_json(dictionary):
     return json.dumps(dictionary, indent=4, sort_keys=True)
 
@@ -68,13 +69,18 @@ def create_short_instances_dict(all_instances_dictionary):
     instance_dict ={}
     for region in all_instances_dictionary.items():
         if region[1]:
-            region_list = region[1][region[0]]
+            try:
+                state_list = region[1]["running"]
+            except KeyError:
+                state_list = region[1]["stopped"]
             instances_ids_list = []
-            for instance in region_list:
-                instances_ids_list.append(region[1][region[0]][0]["ID"])
+            for instance in state_list:
+                instances_ids_list.append(instance["ID"])
                 instance_dict[region[0]] = instances_ids_list
     return instance_dict
-  
+
+def get_instance_tag():
+    pass
 class aws_ranger():    
     def __init__(self):
         ACCESS_KEY = cfg['AWS_ACCESS_KEY_ID']
@@ -106,6 +112,12 @@ class aws_ranger():
             region_list.append(region_api_id)
         return region_list
 
+    def fetch_instances(self, region=False):
+        # instances =  self.aws_client(resource=False, region_name=region).describe_instances()
+        instances =  self.aws_client(region_name=region).instances.filter(
+            Filters=[])
+        return instances
+
     def get_instances(self, instances_state="running", region=False):
         all_instances = []
         region_list = []
@@ -117,12 +129,15 @@ class aws_ranger():
                 region_list.append(region)
 
         all_instances = {}
+        state_file_dictionary = {}
+
         for region in region_list:
             instance_list = []
+            excluded_instance_list = []
+            running_instance_list = []
+            stopped_instance_list = []
             region_inventory = {}
-            instances = self.aws_client(region_name=region).instances.filter(
-                Filters=[{'Name': 'instance-state-name',
-                          'Values': [instances_state]}])
+            instances = self.fetch_instances(region)
             for instance in instances:
                 instance_dict = {}
                 instance_dict['ID'] = instance.id
@@ -131,13 +146,14 @@ class aws_ranger():
                 instance_dict['Creation Date'] = str(instance.launch_time)
                 instance_dict['Tags'] = instance.tags
                 instance_list.append(instance_dict)
-                region_inventory[region] = instance_list
+                region_inventory[instance.state['Name']] = instance_list
             all_instances[region] = region_inventory
         return all_instances
     
-    def create_state_file(self):
-        with open(STATE_FILE, 'w') as f:
-            json.dump(config, f, indent=4)
+    def create_state_file(self, dictionary):
+        with open(STATE_FILE, 'w') as file:
+            file.truncate()
+            json.dump(dictionary, file, indent=4)
         pass
 
     def start_instnace(self, instance_list, region=False):
@@ -198,14 +214,15 @@ def ranger(ctx, verbose, debug):
     ranger = aws_ranger()
     
     if debug:
-        timer = scheduler()
-        print timer.get_seconds_difference(timer.END_OF_DAY)
+        # timer = scheduler()
+        # print timer.get_seconds_difference(timer.END_OF_DAY)
+        ranger.create_state_file(ranger.get_instances())
         sys.exit()
     if verbose:
         logger.setLevel(logging.DEBUG)
     
     if ctx.invoked_subcommand is None:
-        instances = ranger.get_instances()
+        instances = create_short_instances_dict(ranger.get_instances())
         print instances
     else:
         pass
