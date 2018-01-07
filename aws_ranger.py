@@ -1,7 +1,10 @@
 import os
 import sys
 import json
+import sched
 import logging
+
+from datetime import time, date, timedelta, datetime
 
 import serv
 import boto3
@@ -67,7 +70,7 @@ def create_short_instances_dict(all_instances_dictionary):
                 instances_ids_list.append(region[1][region[0]][0]["ID"])
                 instance_dict[region[0]] = instances_ids_list
     return instance_dict
-
+  
 class aws_ranger():    
     def __init__(self):
         ACCESS_KEY = cfg['AWS_ACCESS_KEY_ID']
@@ -127,6 +130,11 @@ class aws_ranger():
                 region_inventory[region] = instance_list
             all_instances[region] = region_inventory
         return all_instances
+    
+    def start_instnace(self, instance_list, region=False):
+        for instance in instance_list:            
+            self.aws_client(region_name=region).instances.filter(
+                InstanceIds=instance).start()
 
     def stop_instnace(self, instance_list, region=False):
         for instance in instance_list:            
@@ -138,6 +146,29 @@ class aws_ranger():
             self.aws_client(region_name=region).instances.filter(
                 InstanceIds=instance_list).terminate()
 
+class scheduler():
+    current = date.today().strftime('%d/%m/%y %H:%M')
+    dt = datetime.strptime(current, "%d/%m/%y %H:%M")
+    START_OF_DAY = datetime.combine(date.today(),
+                                    time(9, 00)).strftime('%d/%m/%y %H:%M')
+    END_OF_DAY = datetime.combine(date.today(), 
+                                  time(18, 00)).strftime('%d/%m/%y %H:%M')
+    START_OF_WEEK = dt - timedelta(days=dt.weekday()-1)
+    LAST_DAY_OF_WEEK = START_OF_WEEK + timedelta(days=4)
+
+    # def __init__(self):
+    #     pass
+    # pass
+
+    def get_seconds_difference(self):
+        current = date.today().strftime('%d/%m/%y %H:%M')
+        dt = datetime.strptime(current, "%d/%m/%y %H:%M")
+        start = dt - timedelta(days=dt.weekday()-1)
+        end = start + timedelta(days=4)
+        print dt
+        print(start)
+        print(end)
+        
 
 CLICK_CONTEXT_SETTINGS = dict(
     help_option_names=['-h', '--help'],
@@ -163,6 +194,8 @@ def ranger(ctx, verbose, debug):
     ranger = aws_ranger()
     
     if debug:
+        timer = scheduler()
+        timer.get_seconds_difference()
         sys.exit()
     if verbose:
         logger.setLevel(logging.DEBUG)
