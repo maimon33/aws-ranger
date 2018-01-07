@@ -68,19 +68,26 @@ def _format_json(dictionary):
 def create_short_instances_dict(all_instances_dictionary):
     instance_dict ={}
     for region in all_instances_dictionary.items():
-        if region[1]:
-            try:
-                state_list = region[1]["running"]
-            except KeyError:
-                state_list = region[1]["stopped"]
-            instances_ids_list = []
-            for instance in state_list:
-                instances_ids_list.append(instance["ID"])
-                instance_dict[region[0]] = instances_ids_list
+        for state in region:
+            if state:
+                # instance_state = state
+                print region
+                print state
+                state_list = []
+                # if 'exclude' in instance_state:
+                #     continue
+                try:
+                    # state_list = instance_state["running"]
+                    print "Running Instance"
+                except KeyError:
+                    # state_list = instance_state["stopped"]
+                    print "Stopped Instance"
+                instances_ids_list = []
+                for instance in state_list:
+                    instances_ids_list.append(instance["ID"])
+                    instance_dict[region[0]] = instances_ids_list
     return instance_dict
 
-def get_instance_tag():
-    pass
 class aws_ranger():    
     def __init__(self):
         ACCESS_KEY = cfg['AWS_ACCESS_KEY_ID']
@@ -113,10 +120,7 @@ class aws_ranger():
         return region_list
 
     def fetch_instances(self, region=False):
-        # instances =  self.aws_client(resource=False, region_name=region).describe_instances()
-        instances =  self.aws_client(region_name=region).instances.filter(
-            Filters=[])
-        return instances
+        return self.aws_client(region_name=region).instances.filter(Filters=[])
 
     def get_instances(self, instances_state="running", region=False):
         all_instances = []
@@ -132,7 +136,6 @@ class aws_ranger():
         state_file_dictionary = {}
 
         for region in region_list:
-            instance_list = []
             excluded_instance_list = []
             running_instance_list = []
             stopped_instance_list = []
@@ -141,12 +144,25 @@ class aws_ranger():
             for instance in instances:
                 instance_dict = {}
                 instance_dict['ID'] = instance.id
+                instance_dict['State'] = instance.state['Name']
                 instance_dict['Type'] = instance.instance_type
                 instance_dict['Public DNS'] = instance.public_dns_name
                 instance_dict['Creation Date'] = str(instance.launch_time)
                 instance_dict['Tags'] = instance.tags
-                instance_list.append(instance_dict)
-                region_inventory[instance.state['Name']] = instance_list
+                try:
+                    if instance.tags[0]['Value'] in TAGS_EXCLUDE_KEY_WORDS:
+                        excluded_instance_list.append(instance_dict)
+                        region_inventory['exclude'] = excluded_instance_list
+                        continue
+                except TypeError:
+                    instance_dict['Tags'] = [{u'Value': 'none', u'Key': 'Tag'}]
+
+                if instance.state['Name'] == 'stopped':
+                    stopped_instance_list.append(instance_dict)
+                    region_inventory['stopped'] = stopped_instance_list
+                elif instance.state['Name'] == 'running':
+                    running_instance_list.append(instance_dict)
+                    region_inventory['running'] = running_instance_list
             all_instances[region] = region_inventory
         return all_instances
     
