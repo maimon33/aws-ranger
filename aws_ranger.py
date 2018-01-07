@@ -26,13 +26,16 @@ def _config():
     AWS_ACCESS_KEY_ID=raw_input('Enter Your AWS Access Key ID : ')
     AWS_SECRET_ACCESS_KEY=raw_input('Enter Your AWS Secret Access Key : ')
     AWS_ACCOUNT_ALIAS=raw_input('Enter an Alias for the Account: ')
+    
     config = {"aws-account": {'AWS_ACCOUNT_ALIAS': AWS_ACCOUNT_ALIAS,
                               'AWS_ACCESS_KEY_ID': AWS_ACCESS_KEY_ID, 
                               'AWS_SECRET_ACCESS_KEY': AWS_SECRET_ACCESS_KEY}}
-    with open('{}/{}.json'.format(CONF_DIR, AWS_ACCOUNT_ALIAS), 'w') as f:
-        json.dump(config, f)
+    with open('{0}/{1}.json'.format(CONF_DIR, AWS_ACCOUNT_ALIAS), 'w') as f:
+        json.dump(config, f, indent=4)
+    
     global CONFIG_PATH
-    CONFIG_PATH = '{}/{}.json'.format(CONF_DIR, AWS_ACCOUNT_ALIAS)
+    CONFIG_PATH = '{0}/{1}.json'.format(CONF_DIR, AWS_ACCOUNT_ALIAS)
+
 
 try:
     if not os.path.exists(CONF_DIR):
@@ -56,6 +59,7 @@ except NameError:
         cfg = json.load(config_file)["aws-account"]
 
 CONFIG_PATH = '{0}/{1}.json'.format(CONF_DIR, cfg['AWS_ACCOUNT_ALIAS'])
+STATE_FILE = '{0}/{1}.state'.format(HOME_DIR, cfg['AWS_ACCOUNT_ALIAS'])
 
 def _format_json(dictionary):
     return json.dumps(dictionary, indent=4, sort_keys=True)
@@ -131,6 +135,11 @@ class aws_ranger():
             all_instances[region] = region_inventory
         return all_instances
     
+    def create_state_file(self):
+        with open(STATE_FILE, 'w') as f:
+            json.dump(config, f, indent=4)
+        pass
+
     def start_instnace(self, instance_list, region=False):
         for instance in instance_list:            
             self.aws_client(region_name=region).instances.filter(
@@ -160,6 +169,9 @@ class scheduler():
         now = datetime.now()
         seconds = (target_datetime - now).seconds
         return seconds
+
+    def get_scheduled_event_command(self, action, target_datetime):
+        pass
         
 
 CLICK_CONTEXT_SETTINGS = dict(
@@ -187,7 +199,7 @@ def ranger(ctx, verbose, debug):
     
     if debug:
         timer = scheduler()
-        timer.get_seconds_difference()
+        print timer.get_seconds_difference(timer.END_OF_DAY)
         sys.exit()
     if verbose:
         logger.setLevel(logging.DEBUG)
