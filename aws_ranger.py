@@ -60,30 +60,26 @@ except NameError:
 CONFIG_PATH = '{0}/{1}.json'.format(CONF_DIR, cfg['AWS_ACCOUNT_ALIAS'])
 STATE_FILE = '{0}/{1}.state'.format(HOME_DIR, cfg['AWS_ACCOUNT_ALIAS'])
 
-TAGS_EXCLUDE_KEY_WORDS = ["Prod", "Production", "Do Not Stop"]
+TAGS_EXCLUDE_KEY_WORDS = ["prod", "Production", "do not stop"]
 
 def _format_json(dictionary):
     return json.dumps(dictionary, indent=4, sort_keys=True)
 
 def create_short_instances_dict(all_instances_dictionary):
     instance_dict ={}
+
     for region in all_instances_dictionary.items():
-        for state in region:
-            if state:
-                # instance_state = state
-                print region
-                print state
-                state_list = []
-                # if 'exclude' in instance_state:
-                #     continue
-                try:
-                    # state_list = instance_state["running"]
-                    print "Running Instance"
-                except KeyError:
-                    # state_list = instance_state["stopped"]
-                    print "Stopped Instance"
-                instances_ids_list = []
-                for instance in state_list:
+        instances_ids_list = []
+        try:
+            region[1]["running"]
+            region[1]["stopped"]
+            region[1]["exclude"]
+        except KeyError:
+            region[1]["Region State"] = "Region vacent"
+        
+        for state in region[1]:
+            if state in {"running", "stopped"}:
+                for instance in region[1][state]:
                     instances_ids_list.append(instance["ID"])
                     instance_dict[region[0]] = instances_ids_list
     return instance_dict
@@ -150,7 +146,7 @@ class aws_ranger():
                 instance_dict['Creation Date'] = str(instance.launch_time)
                 instance_dict['Tags'] = instance.tags
                 try:
-                    if instance.tags[0]['Value'] in TAGS_EXCLUDE_KEY_WORDS:
+                    if instance.tags[0]['Value'].lower() in TAGS_EXCLUDE_KEY_WORDS:
                         excluded_instance_list.append(instance_dict)
                         region_inventory['exclude'] = excluded_instance_list
                         continue
@@ -239,7 +235,7 @@ def ranger(ctx, verbose, debug):
     
     if ctx.invoked_subcommand is None:
         instances = create_short_instances_dict(ranger.get_instances())
-        print instances
+        # print instances
     else:
         pass
 
