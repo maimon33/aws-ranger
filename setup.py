@@ -15,7 +15,6 @@ setup(
     install_requires=[
         'boto3==1.4.4',
         'click==6.7',
-        # 'Serv==0.3.0',
-        'wryte==0.1.1',
+        'Serv==0.3.0',
     ]
 )

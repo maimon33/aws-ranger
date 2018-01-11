@@ -3,52 +3,31 @@ import os
 import sys
 import json
 import sched
-
+import urllib2
+import smtplib
 
 from datetime import time, date, timedelta, datetime
 
-# import serv
+import serv
 import boto3
 import click
 
-from wryte import Wryte
+# from wryte import Wryte
 from botocore.exceptions import ClientError
 
 USER_HOME = os.getenv("HOME")
 AWS_RANGER_HOME = '{0}/.aws-ranger'.format(USER_HOME)
 BOTO_CREDENTIALS = '{0}/.aws/credentials'.format(USER_HOME)
-TAGS_EXCLUDE_KEY_WORDS = ["prod", "Production", "do not stop"]
-
-# def _config():
-#     wryter.info('Please provide AWS Credentials')
-#     AWS_ACCESS_KEY_ID=raw_input('Enter Your AWS Access Key ID : ')
-#     AWS_SECRET_ACCESS_KEY=raw_input('Enter Your AWS Secret Access Key : ')
-#     AWS_ACCOUNT_ALIAS=raw_input('Enter an Alias for the Account: ')
-    
-#     config = {"aws-account": {'AWS_ACCOUNT_ALIAS': AWS_ACCOUNT_ALIAS,
-#                               'AWS_ACCESS_KEY_ID': AWS_ACCESS_KEY_ID, 
-#                               'AWS_SECRET_ACCESS_KEY': AWS_SECRET_ACCESS_KEY}}
-#     with open('{0}/{1}.json'.format(CONF_DIR, AWS_ACCOUNT_ALIAS), 'w') as file:
-#         json.dump(config, file, indent=4)
-
-# try:
-#     if os.listdir(CONF_DIR) == []:
-#         raise NameError
-#     for file in os.listdir(CONF_DIR):
-#         if file.endswith(".json"):
-#             global CONFIG_PATH
-#             CONFIG_PATH = '{}/{}'.format(CONF_DIR, file)
-#         with open(CONFIG_PATH) as config_file:
-#             cfg = json.load(config_file)["aws-account"]
-# except NameError:
-#     wryter.info('Needs to be configured first')
-    # _config()
-    # with open(CONFIG_PATH) as config_file:
-    #     cfg = json.load(config_file)["aws-account"]
-
 
 def _format_json(dictionary):
     return json.dumps(dictionary, indent=4, sort_keys=True)
+
+def internet_on():
+    try:
+        urllib2.urlopen('http://www.google.com', timeout=1)
+        return True
+    except urllib2.URLError as err: 
+        return False
 
 def _yes_or_no(question):
     while True:
@@ -56,21 +35,66 @@ def _yes_or_no(question):
         if reply[0] == 'y':
             return True
         else:
-            wryter.info('Wrong answer. Bye')
+            print 'You replied No. Bye'
+            return False
 
 def create_config_file(config_path, profile_name="default"):
-    TEXT = """Please enter tag values to exclude
-        them from the aws-ranger (please comma to seperate them)
-        [prod, production, do not stop, keep]:"""
-    EXCLUDE_TAGS = raw_input(TEXT) or ["prod", "production", "do not stop", "keep"]
-    print EXCLUDE_TAGS
-    with open(config_path, 'w') as file:
-        EXCLUDE_TAGS = raw_input("Please enter tag values to exclude\
-        them from the aws-ranger (please comma to seperate them)\
-        [prod, production, do not stop, keep]:") or ["prod", "production", "do not stop", "keep"]
-        print EXCLUDE_TAGS
-    pass
+    # wryter = Wryte(name='aws-ranger')
+    AWS_RANGER_CONFIG = {}
+    TAGS_DICTIONARY = {}
+    TIMES_DICTIONARY = {}
+    EMAIL_DICTIONARY = {}
+    if os.path.isfile(config_path):
+        if _yes_or_no("Config file exist, Do you wish to proceed?"):
+            print('\nCreating config file...')
+            
+            # Tags section
+            DEFAULT_EXCLUDE_TAGS = ["prod", "production", "free range"]
+            TEXT = """\nPlease enter tag values to exclude them 
+from the aws-ranger (please use comma to separate them)
+prod, production, free range:"""
+            EXCLUDE_TAGS = raw_input(TEXT).split(",")
+            if len(EXCLUDE_TAGS) == 1:
+                EXCLUDE_TAGS = DEFAULT_EXCLUDE_TAGS
+            AWS_RANGER_CONFIG["EXCLUDE_TAGS"] = EXCLUDE_TAGS
+            
+            # Time definition section
+            # TIMES_DICTIONARY["START_OF_DAY"] = "datetime.combine(date.today(), time(9, 00))"
+            TIMES_DICTIONARY["START_OF_DAY_TOMORROW"] = "datetime.combine((date.today()+ timedelta(days=1)), time(9, 00))"
+            TIMES_DICTIONARY["END_OF_DAY"] = "datetime.combine(date.today(), time(18, 00))"
+            TIMES_DICTIONARY["START_OF_WEEK"] = "dt - timedelta(days=dt.weekday()-1)"
+            TIMES_DICTIONARY["LAST_DAY_OF_WEEK"] = "{} + timedelta(days=4)"
+            AWS_RANGER_CONFIG["TIMES"] = TIMES_DICTIONARY
 
+            # Email section
+            EMAIL_DICTIONARY['GMAIL_ACCOUNT'] = raw_input("Gmail account? ")
+            EMAIL_DICTIONARY['GMAIL_PASSWORD'] = raw_input("Gmail password? ")
+            EMAIL_DICTIONARY['DESTINATION_EMAIL'] = raw_input(
+                "Notification Destination? ")
+            AWS_RANGER_CONFIG["EMAIL"] = EMAIL_DICTIONARY
+            with open(config_path, 'w') as file:
+                json.dump(AWS_RANGER_CONFIG, file, indent=4)
+
+        else:
+            print('Config file found. Try to run aws-ranger without --config')
+            sys.exit()
+
+def read_config_file(config_path, requested_data, profile_name="default"):
+    ranger_config = json.load(open(config_path))
+    return ranger_config[requested_data]
+
+def send_mail(config_path, subject, msg):
+    email_config = read_config_file(config_path, "EMAIL")
+    server = smtplib.SMTP('smtp.gmail.com', 587)
+    server.starttls()
+    server.login(email_config["GMAIL_ACCOUNT"], 
+                 email_config["GMAIL_PASSWORD"])
+
+    server.sendmail(email_config["GMAIL_ACCOUNT"], 
+                    email_config["DESTINATION_EMAIL"],
+                    'Subject: {}\n\n{}'.format(subject, msg))
+    server.quit()
+    
 def find_profiles(file):
     profiles_list = []
     boto_config = open(file).read()
@@ -78,7 +102,7 @@ def find_profiles(file):
         profiles_list.append(match.strip("[]"))
     return profiles_list
         
-def create_short_instances_dict(all_instances_dictionary):
+def create_short_instances_dict(all_instances_dictionary, service=False):
     instance_dict ={}
 
     for region in all_instances_dictionary.items():
@@ -87,24 +111,31 @@ def create_short_instances_dict(all_instances_dictionary):
             region[1]["running"]
             region[1]["stopped"]
             region[1]["exclude"]
+            region[1]["managed"]
         except KeyError:
             region[1]["Region State"] = "Region vacent"
         
-        for state in region[1]:
-            if state in {"running", "stopped"}:
-                for instance in region[1][state]:
-                    instances_ids_list.append(instance["ID"])
-                    instance_dict[region[0]] = instances_ids_list
+        if service:
+            for state in region[1]:
+                if state in {"managed"}:
+                    for instance in region[1][state]:
+                        instances_ids_list.append(instance["_ID"])
+                        instance_dict[region[0]] = instances_ids_list
+        else:
+            for state in region[1]:
+                if state in {"running", "stopped"}:
+                    for instance in region[1][state]:
+                        instances_ids_list.append(instance["_ID"])
+                        instance_dict[region[0]] = instances_ids_list
     return instance_dict
 
 class aws_ranger():
     def __init__(self, profile_name):
-        wryter = Wryte(name='aws-ranger')
         try:
             self.aws_client(resource=False, 
                             profile_name=profile_name).describe_regions()
         except ClientError as e:
-            wryter.info('Failed to Authenticate your AWS account\n'
+            print('Failed to Authenticate your AWS account\n'
             'Review your boto credentials file at ~/.aws/credentials')
             sys.exit()
 
@@ -143,7 +174,6 @@ class aws_ranger():
                 region_list.append(region)
 
         all_instances = {}
-        state_file_dictionary = {}
 
         for region in region_list:
             excluded_instance_list = []
@@ -153,14 +183,15 @@ class aws_ranger():
             instances = self.fetch_instances(region)
             for instance in instances:
                 instance_dict = {}
-                instance_dict['ID'] = instance.id
+                instance_dict['_ID'] = instance.id
                 instance_dict['State'] = instance.state['Name']
                 instance_dict['Type'] = instance.instance_type
                 instance_dict['Public DNS'] = instance.public_dns_name
                 instance_dict['Creation Date'] = str(instance.launch_time)
                 instance_dict['Tags'] = instance.tags
                 try:
-                    if instance.tags[0]['Value'].lower() in TAGS_EXCLUDE_KEY_WORDS:
+                    if instance.tags[0]['Value'].lower() in \
+                    read_config_file(config_path, "EXCLUDE_TAGS"):
                         excluded_instance_list.append(instance_dict)
                         region_inventory['exclude'] = excluded_instance_list
                         continue
@@ -176,45 +207,115 @@ class aws_ranger():
             all_instances[region] = region_inventory
         return all_instances
     
-    def create_state_file(self, dictionary):
-        with open(STATE_FILE, 'w') as file:
-            file.truncate()
-            json.dump(dictionary, file, indent=4)
-        pass
+    def create_state_file(self, dictionary, state_file):
+        state_file_dictionary = {}
+        for region in dictionary.items():
+            excluded_instance_list = []
+            running_instance_list = []
+            stopped_instance_list = []
+            managed_instance_list = []
+            region_inventory = {}
+
+            for state in region[1]:
+                if state == "exclude":
+                    for instance in region[1]['exclude']:
+                        managed_instance_list.append(instance)
+                        region_inventory["exclude"] = excluded_instance_list
+                elif state == "running":
+                    for instance in region[1]['running']:
+                        managed_instance_list.append(instance)
+                        running_instance_list.append(instance)
+                        region_inventory["managed"] = managed_instance_list
+                        region_inventory["running"] = running_instance_list
+                elif state == "stopped":
+                    for instance in region[1]['stopped']:
+                        managed_instance_list.append(instance)
+                        region_inventory["stopped"] = managed_instance_list
+            if len(region[1]) == 0:
+                region_inventory["State"] = "Non Active"
+            state_file_dictionary[region[0]] = region_inventory
+        # return state_file_dictionary
+
+        with open(state_file, 'w') as file:
+            json.dump(state_file_dictionary, file, indent=4, sort_keys=True)
 
     def start_instnace(self, instance_list, region=False):
         for instance in instance_list:
-            wryter.info('Starting instance: {}'.format(instance))
+            print('Starting instance: {}'.format(instance))
             self.aws_client(region_name=region).instances.filter(
                 InstanceIds=instance).start()
 
     def stop_instnace(self, instance_list, region=False):
         for instance in instance_list:
-            wryter.info('Stopping instance: {}'.format(instance))
+            print('Stopping instance: {}'.format(instance))
             self.aws_client(region_name=region).instances.filter(
                 InstanceIds=instance).stop()
 
     def terminate_instnace(self, instance_list, region=False):
         for instance in instance_list:
-            wryter.info('Terminating instance: {}'.format(instance))
+            print('Terminating instance: {}'.format(instance))
             self.aws_client(region_name=region).instances.filter(
                 InstanceIds=instance_list).terminate()
 
 class scheduler():
-    current = date.today().strftime('%d/%m/%y %H:%M')
-    dt = datetime.strptime(current, "%d/%m/%y %H:%M")
-    START_OF_DAY = datetime.combine(date.today(),
-                                    time(9, 00))
-    END_OF_DAY = datetime.combine(date.today(), 
-                                  time(18, 00))
-    START_OF_WEEK = dt - timedelta(days=dt.weekday()-1)
-    LAST_DAY_OF_WEEK = START_OF_WEEK + timedelta(days=4)
+    # current = date.today().strftime('%d/%m/%y %H:%M')
+    # dt = datetime.strptime(current, "%d/%m/%y %H:%M")
 
-    def get_seconds_difference(self, target_datetime):
-        now = datetime.now()
-        seconds = (target_datetime - now).seconds
+    def next_weekday(self, d, weekday):
+        days_ahead = weekday - d.weekday()
+        if days_ahead <= 0:
+            days_ahead += 7
+        return d +timedelta(days_ahead)
+
+    def end_of_day(self):
+        target = datetime.combine(date.today(), time(18, 00))
+        seconds = (target - datetime.now()).seconds
+        return seconds
+    
+    def tomorrow_morning(self):
+        target = datetime.combine((date.today() + timedelta(days=1)),
+                                  time(9, 00))
+        seconds = (target - datetime.now()).seconds
         return seconds
 
+    def end_of_week(self):
+        d = datetime.date(datetime.now())
+        next_thursday = self.next_weekday(d, 3) # 3 for next Thursday
+        return next_thursday
+    
+    def next_sunday(self):
+        d = datetime.date(datetime.now())
+        next_sunday = self.next_weekday(d, 6) # 6 for next Sunday
+        return next_sunday
+
+    def get_seconds_difference(self, policy):
+        time_shifts = read_config_file(config_path, "TIMES")
+        now = datetime.now()
+        current = date.today().strftime('%d/%m/%y %H:%M')
+        dt = datetime.strptime(current, "%d/%m/%y %H:%M")
+        START_OF_WEEK = eval(time_shifts['START_OF_WEEK'])
+        # target = eval(time_shifts['LAST_DAY_OF_WEEK'].format(now))
+        print self.end_of_day()
+        print self.tomorrow_morning()
+        print self.end_of_week()
+        print self.next_sunday()
+        # print now
+        # print current
+        # print dt
+        # print START_OF_WEEK
+        # print target
+        # seconds = (target - now).seconds
+        # print dir(date)
+        # return seconds
+
+    def set_policy(self):
+        TEXT = """\nChoose the scheduling policy
+\b [nightly]: Actions on Instances every end of day
+\b [work week]: Actions on Instances as soon as the weekend starts
+"""
+        policy = raw_input(TEXT)
+        print policy
+    
     def get_scheduled_event_command(self, action, target_datetime):
         pass
         
@@ -243,23 +344,26 @@ def ranger(ctx, init, verbose, debug):
 
     Scout for Instances in all AWS Regions
     """
-    if verbose:
-        wryter = Wryte(name='wryte', level='debug')
+    # if verbose:
+        # wryter = Wryte(name='wryte', level='debug')
         
+    if not internet_on():
+        print "No Internet connection"
+        sys.exit()
+    
     DEFAULT_AWS_PROFILE = find_profiles(BOTO_CREDENTIALS)[0]
     CONFIG_PATH = '{0}/{1}.conf'.format(AWS_RANGER_HOME,
                                         DEFAULT_AWS_PROFILE)
     STATE_FILE = '{0}/{1}.state'.format(AWS_RANGER_HOME,
                                         DEFAULT_AWS_PROFILE)
-    ctx.obj = [CONFIG_PATH, STATE_FILE]
     
-    wryter = Wryte(name='aws-ranger')
+    ctx.obj = [CONFIG_PATH, STATE_FILE]
 
     if init:
         confirm = 'You are about to create Home dir for aws-ranger.\n'
         'Continue?'
         if os.path.exists(AWS_RANGER_HOME):
-            wryter.info('aws-ranger was already initiated')
+            print('aws-ranger was already initiated')
             sys.exit()
 
         if _yes_or_no(confirm):
@@ -270,15 +374,19 @@ def ranger(ctx, init, verbose, debug):
             sys.exit()
     
     if not os.path.exists(AWS_RANGER_HOME):
-        wryter.info('Missing aws-ranger HOME dir\n'
+        print('Missing aws-ranger HOME dir\n'
         'Run `aws-ranger --config` or create it yourself at ~/.aws-ranger')
         sys.exit()
     
     ranger = aws_ranger(profile_name='default')
     
     if debug:
-        create_config_file(CONFIG_PATH, DEFAULT_AWS_PROFILE)
-        # ranger.create_state_file(ranger.get_instances())
+        # create_config_file(CONFIG_PATH)
+        # send_mail(CONFIG_PATH, "Message from the ranger", "Hi, Found this!")
+        timer = scheduler()
+        timer.set_policy()
+        # print timer.get_seconds_difference(CONFIG_PATH)
+        
         sys.exit()
     
     if ctx.invoked_subcommand is None:
@@ -319,18 +427,30 @@ def terminate(region):
 
 @ranger.command('deamon')
 @click.pass_obj
+@click.argument('policy', default="notify")
 @click.argument('region', default=False)
-@click.option('-a',
-              '--alert',
-              is_flag=True,
-              help='No Action, Just alert by mail')
-def deamon(region):
-    wryter = Wryte(name='aws-ranger')
+@click.argument('action', default="stop")
+def deamon(policy, region, action):
+    """Run aws-ranger as a deamon.\n
+    Control you ranger by setting the policy, 
+    Set the action aws-ranger will enforce [stop, terminate, alert]\n
+    You can limit aws-ranger control to one region.\n
+    """
+    CONFIG_PATH = ctx[0]
+    STATE_FILE = ctx[1]
+
+    print policy
 
     # Checks you are running with sudo privileges
     if os.getuid() != 0:
-        wryter.info('You run with sudo privileges to run a deamon')
+        print('You run with sudo privileges to run a deamon')
         sys.exit()
 
     ranger = aws_ranger(profile_name='default')
+    ranger.create_state_file(ranger.get_instances(), STATE_FILE)
+    managed_instances = create_short_instances_dict(ranger.get_instances(), 
+                                                    service=True)
+
+    if alert:
+        send_mail("Subject", "Mail content")
     pass
