@@ -281,40 +281,24 @@ class scheduler():
     def end_of_week(self):
         d = datetime.date(datetime.now())
         next_thursday = self.next_weekday(d, 3) # 3 for next Thursday
-        return next_thursday
+        end_of_week = datetime.combine(next_thursday, time(18, 00))
+        return end_of_week
     
     def next_sunday(self):
         d = datetime.date(datetime.now())
         next_sunday = self.next_weekday(d, 6) # 6 for next Sunday
+        start_of_week = datetime.combine(next_sunday, time(9, 00))
         return next_sunday
 
     def get_seconds_difference(self, policy):
-        time_shifts = read_config_file(config_path, "TIMES")
         now = datetime.now()
-        current = date.today().strftime('%d/%m/%y %H:%M')
-        dt = datetime.strptime(current, "%d/%m/%y %H:%M")
-        START_OF_WEEK = eval(time_shifts['START_OF_WEEK'])
-        # target = eval(time_shifts['LAST_DAY_OF_WEEK'].format(now))
-        print self.end_of_day()
-        print self.tomorrow_morning()
-        print self.end_of_week()
-        print self.next_sunday()
-        # print now
-        # print current
-        # print dt
-        # print START_OF_WEEK
-        # print target
-        # seconds = (target - now).seconds
-        # print dir(date)
-        # return seconds
+        target = self.end_of_week()
+        seconds = (target - now).seconds
+        return seconds
 
     def set_policy(self):
-        TEXT = """\nChoose the scheduling policy
-\b [nightly]: Actions on Instances every end of day
-\b [work week]: Actions on Instances as soon as the weekend starts
-"""
-        policy = raw_input(TEXT)
-        print policy
+        print self.get_seconds_difference("policy")
+        # print policy
     
     def get_scheduled_event_command(self, action, target_datetime):
         pass
@@ -407,6 +391,20 @@ def stop(ctx, region):
     for k, v in stop_list.items():
         ranger.stop_instnace(v, region=k)
 
+@ranger.command('start')
+@click.pass_obj
+@click.argument('region', default=False)
+def start(ctx, region):
+    """Start managed instances Found by aws-ranger
+    """
+    CONFIG_PATH = ctx[0]
+    ranger = aws_ranger(profile_name='default')
+
+    instances = ranger.get_instances()
+    start_list = create_short_instances_dict(instances)
+    for k, v in start_list.items():
+        ranger.start_instnace(v, region=k)
+
 @ranger.command('terminate')
 @click.pass_obj
 @click.argument('region', default=False)
@@ -427,12 +425,17 @@ def terminate(region):
 
 @ranger.command('deamon')
 @click.pass_obj
-@click.argument('policy', default="notify")
+@click.argument('policy', default="nightly")
 @click.argument('region', default=False)
 @click.argument('action', default="stop")
 def deamon(policy, region, action):
     """Run aws-ranger as a deamon.\n
-    Control you ranger by setting the policy, 
+    
+    \b 
+    Control aws-ranger by setting the policy,
+    [nightly]: Actions on Instances every end of day
+    [work week]: Actions on Instances as soon as the weekend starts
+
     Set the action aws-ranger will enforce [stop, terminate, alert]\n
     You can limit aws-ranger control to one region.\n
     """
