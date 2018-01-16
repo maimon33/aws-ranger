@@ -15,6 +15,7 @@ setup(
     install_requires=[
         'boto3==1.4.4',
         'click==6.7',
+        'APScheduler==3.5.1',
         'Serv==0.3.0',
     ]
 )

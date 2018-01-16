@@ -2,17 +2,20 @@ import re
 import os
 import sys
 import json
-import sched
+import time as T
+# import sched
 import urllib2
 import smtplib
 
 from datetime import time, date, timedelta, datetime
+# from threading import Timer
 
 import serv
 import boto3
 import click
 
 # from wryte import Wryte
+from apscheduler.schedulers.background import BackgroundScheduler
 from botocore.exceptions import ClientError
 
 USER_HOME = os.getenv("HOME")
@@ -40,40 +43,30 @@ def _yes_or_no(question):
 
 def create_config_file(config_path, profile_name="default"):
     # wryter = Wryte(name='aws-ranger')
-    AWS_RANGER_CONFIG = {}
-    TAGS_DICTIONARY = {}
-    TIMES_DICTIONARY = {}
-    EMAIL_DICTIONARY = {}
+    aws_ranger_config = {}
+    email_dictionary = {}
     if os.path.isfile(config_path):
         if _yes_or_no("Config file exist, Do you wish to proceed?"):
             print('\nCreating config file...')
             
             # Tags section
-            DEFAULT_EXCLUDE_TAGS = ["prod", "production", "free range"]
-            TEXT = """\nPlease enter tag values to exclude them 
+            default_exclude_tags = ["prod", "production", "free range"]
+            text = """\nPlease enter tag values to exclude them 
 from the aws-ranger (please use comma to separate them)
 prod, production, free range:"""
-            EXCLUDE_TAGS = raw_input(TEXT).split(",")
-            if len(EXCLUDE_TAGS) == 1:
-                EXCLUDE_TAGS = DEFAULT_EXCLUDE_TAGS
-            AWS_RANGER_CONFIG["EXCLUDE_TAGS"] = EXCLUDE_TAGS
-            
-            # Time definition section
-            # TIMES_DICTIONARY["START_OF_DAY"] = "datetime.combine(date.today(), time(9, 00))"
-            TIMES_DICTIONARY["START_OF_DAY_TOMORROW"] = "datetime.combine((date.today()+ timedelta(days=1)), time(9, 00))"
-            TIMES_DICTIONARY["END_OF_DAY"] = "datetime.combine(date.today(), time(18, 00))"
-            TIMES_DICTIONARY["START_OF_WEEK"] = "dt - timedelta(days=dt.weekday()-1)"
-            TIMES_DICTIONARY["LAST_DAY_OF_WEEK"] = "{} + timedelta(days=4)"
-            AWS_RANGER_CONFIG["TIMES"] = TIMES_DICTIONARY
+            exclude_tags = raw_input(text).split(",")
+            if len(exclude_tags) == 1:
+                exclude_tags = default_exclude_tags
+            aws_ranger_config["EXCLUDE_TAGS"] = exclude_tags
 
             # Email section
-            EMAIL_DICTIONARY['GMAIL_ACCOUNT'] = raw_input("Gmail account? ")
-            EMAIL_DICTIONARY['GMAIL_PASSWORD'] = raw_input("Gmail password? ")
-            EMAIL_DICTIONARY['DESTINATION_EMAIL'] = raw_input(
+            email_dictionary['GMAIL_ACCOUNT'] = raw_input("Gmail account? ")
+            email_dictionary['GMAIL_PASSWORD'] = raw_input("Gmail password? ")
+            email_dictionary['DESTINATION_EMAIL'] = raw_input(
                 "Notification Destination? ")
-            AWS_RANGER_CONFIG["EMAIL"] = EMAIL_DICTIONARY
+            aws_ranger_config["EMAIL"] = email_dictionary
             with open(config_path, 'w') as file:
-                json.dump(AWS_RANGER_CONFIG, file, indent=4)
+                json.dump(aws_ranger_config, file, indent=4)
 
         else:
             print('Config file found. Try to run aws-ranger without --config')
@@ -129,7 +122,13 @@ def create_short_instances_dict(all_instances_dictionary, service=False):
                         instance_dict[region[0]] = instances_ids_list
     return instance_dict
 
-class aws_ranger():
+def read_state_file(state_file):
+    ranger_state = json.load(open(state_file))
+    for region in ranger_state.items():
+        print region
+    print ranger_state
+    pass
+class AWSRanger(object):
     def __init__(self, profile_name):
         try:
             self.aws_client(resource=False, 
@@ -230,11 +229,10 @@ class aws_ranger():
                 elif state == "stopped":
                     for instance in region[1]['stopped']:
                         managed_instance_list.append(instance)
-                        region_inventory["stopped"] = managed_instance_list
+                        region_inventory["stopped"] = stopped_instance_list
             if len(region[1]) == 0:
                 region_inventory["State"] = "Non Active"
             state_file_dictionary[region[0]] = region_inventory
-        # return state_file_dictionary
 
         with open(state_file, 'w') as file:
             json.dump(state_file_dictionary, file, indent=4, sort_keys=True)
@@ -257,51 +255,79 @@ class aws_ranger():
             self.aws_client(region_name=region).instances.filter(
                 InstanceIds=instance_list).terminate()
 
-class scheduler():
-    # current = date.today().strftime('%d/%m/%y %H:%M')
-    # dt = datetime.strptime(current, "%d/%m/%y %H:%M")
+class Scheduler(object):
+    def __init__(self, object):
+        pass
 
-    def next_weekday(self, d, weekday):
-        days_ahead = weekday - d.weekday()
-        if days_ahead <= 0:
-            days_ahead += 7
-        return d +timedelta(days_ahead)
+    def start_of_day(self, day):
+        return  datetime.combine(day, time(9, 00))
 
-    def end_of_day(self):
-        target = datetime.combine(date.today(), time(18, 00))
-        seconds = (target - datetime.now()).seconds
-        return seconds
-    
-    def tomorrow_morning(self):
-        target = datetime.combine((date.today() + timedelta(days=1)),
-                                  time(9, 00))
-        seconds = (target - datetime.now()).seconds
-        return seconds
+    def end_of_day(self, day):
+        return  datetime.combine(day, time(18, 00))
+
+    def next_weekday(self):
+        workday = date.today() + timedelta(days=1)
+        while workday.weekday() in [4, 5]:
+            # 4 is Friday and 5 is Saturday
+            workday = workday + timedelta(days=1)
+        else:
+            return workday
 
     def end_of_week(self):
-        d = datetime.date(datetime.now())
-        next_thursday = self.next_weekday(d, 3) # 3 for next Thursday
-        end_of_week = datetime.combine(next_thursday, time(18, 00))
+        next_thursday = self.next_weekday()
+        while next_thursday.weekday() != 3: # 3 for next Thursday
+            next_thursday = next_thursday + timedelta(days=1)
+        end_of_week = self.end_of_day(next_thursday)
         return end_of_week
     
-    def next_sunday(self):
-        d = datetime.date(datetime.now())
-        next_sunday = self.next_weekday(d, 6) # 6 for next Sunday
-        start_of_week = datetime.combine(next_sunday, time(9, 00))
-        return next_sunday
+    def start_of_next_week(self):
+        next_sunday = self.next_weekday()
+        while next_sunday.weekday() != 6: # 3 for next Sunday
+            next_sunday = next_sunday + timedelta(days=1)
+        start_of_week = self.start_of_day(next_sunday)
+        return start_of_week
 
-    def get_seconds_difference(self, policy):
+    def get_seconds_difference(self):
         now = datetime.now()
         target = self.end_of_week()
         seconds = (target - now).seconds
         return seconds
 
-    def set_policy(self):
-        print self.get_seconds_difference("policy")
-        # print policy
+    def set_policy(self, policy):
+        pass
+    
+    def print_event(self):
+        print 'EVENT:', T.time(), "Hi"
+        return 'EVENT:', T.time(), "Hi"
     
     def get_scheduled_event_command(self, action, target_datetime):
-        pass
+        # print dir(apscheduler)
+        sched = BackgroundScheduler(trigger='cron')
+        sched.start()
+        print sched.print_jobs()
+        # print sched.add_job()
+        print T.time()
+        trigger = OrTrigger([CronTrigger(hour=1, minute=30)])
+        job = sched.add_job(self.print_event, trigger)
+        # job = sched.add_job(self.print_event, 2)
+        T.sleep(60)
+        print T.time()
+        print sched.print_jobs()
+        # s = sched.scheduler(T.time, T.sleep)
+        # if len(s.queue) > 1:
+        #     print "Found item!"
+        # else:
+        #     s.enter(5, 1, self.print_event, ())
+        # print len(s.queue)
+        # print s.queue
+        # s.run()
+        # T.sleep(5)
+        # print s.queue
+        # print T.time()
+        # Timer(30, self.print_event, ()).start()
+        # print dir(Timer)
+        # T.sleep(15)
+        # print T.time()
         
 
 CLICK_CONTEXT_SETTINGS = dict(
@@ -362,13 +388,12 @@ def ranger(ctx, init, verbose, debug):
         'Run `aws-ranger --config` or create it yourself at ~/.aws-ranger')
         sys.exit()
     
-    ranger = aws_ranger(profile_name='default')
+    ranger = AWSRanger(profile_name='default')
     
     if debug:
-        # create_config_file(CONFIG_PATH)
-        # send_mail(CONFIG_PATH, "Message from the ranger", "Hi, Found this!")
-        timer = scheduler()
-        timer.set_policy()
+        timer = Scheduler(object)
+        # timer.set_policy("policy")
+        timer.get_scheduled_event_command("stop", "nightly")
         # print timer.get_seconds_difference(CONFIG_PATH)
         
         sys.exit()
@@ -384,7 +409,7 @@ def stop(ctx, region):
     """Stop instances Found by aws-ranger
     """
     CONFIG_PATH = ctx[0]
-    ranger = aws_ranger(profile_name='default')
+    ranger = AWSRanger(profile_name='default')
 
     instances = ranger.get_instances()
     stop_list = create_short_instances_dict(instances)
@@ -398,7 +423,7 @@ def start(ctx, region):
     """Start managed instances Found by aws-ranger
     """
     CONFIG_PATH = ctx[0]
-    ranger = aws_ranger(profile_name='default')
+    ranger = AWSRanger(profile_name='default')
 
     instances = ranger.get_instances()
     start_list = create_short_instances_dict(instances)
@@ -411,7 +436,7 @@ def start(ctx, region):
 def terminate(region):
     """Terminate instances Found by aws-ranger
     """
-    ranger = aws_ranger(profile_name='default')
+    ranger = AWSRanger(profile_name='default')
 
     instances = ranger.get_instances()
     stop_list = create_short_instances_dict(instances)
@@ -426,15 +451,16 @@ def terminate(region):
 @ranger.command('deamon')
 @click.pass_obj
 @click.argument('policy', default="nightly")
-@click.argument('region', default=False)
 @click.argument('action', default="stop")
-def deamon(policy, region, action):
+# @click.argument('region', default=False)
+def deamon(ctx, policy, action):
     """Run aws-ranger as a deamon.\n
     
     \b 
     Control aws-ranger by setting the policy,
-    [nightly]: Actions on Instances every end of day
-    [work week]: Actions on Instances as soon as the weekend starts
+    [nightly]: Actions (stop\ terminate) on Instances every end of day
+    [workweek]: Actions (stop\ terminate) on Instances just before the weekend
+    [full]: Actions (stop\ start) on Instances Daily and over the weekend
 
     Set the action aws-ranger will enforce [stop, terminate, alert]\n
     You can limit aws-ranger control to one region.\n
@@ -445,15 +471,35 @@ def deamon(policy, region, action):
     print policy
 
     # Checks you are running with sudo privileges
-    if os.getuid() != 0:
-        print('You run with sudo privileges to run a deamon')
-        sys.exit()
+    # if os.getuid() != 0:
+    #     print('You run with sudo privileges to run a deamon')
+    #     sys.exit()
 
-    ranger = aws_ranger(profile_name='default')
-    ranger.create_state_file(ranger.get_instances(), STATE_FILE)
-    managed_instances = create_short_instances_dict(ranger.get_instances(), 
-                                                    service=True)
+    ranger = AWSRanger(profile_name='default')
+    
+    if os.path.isfile(STATE_FILE):
+        if _yes_or_no("State file exists, Do you want to overwrite it?"):
+            instances = ranger.create_state_file(ranger.get_instances(), STATE_FILE)
+        else:
+            instances = read_state_file(STATE_FILE)
+    
+    state_file = json.load(open(STATE_FILE))
+    state_file['_schedule'] = {'Policy': policy,
+                               'Next Task': 'Stop',
+                               'Time': '9PM'}
+    with open(STATE_FILE, 'w') as file:
+        json.dump(state_file, file, indent=4, sort_keys=True)
 
-    if alert:
-        send_mail("Subject", "Mail content")
-    pass
+    
+    managed_list = create_short_instances_dict(instances, service=True)
+    
+    # if action == "stop":
+    #     for k, v in managed_list.items():
+    #         ranger.stop_instnace(v, region=k)
+    # elif action == "terminate":
+    #     for k, v in managed_list.items():
+    #         ranger.terminate_instnace(v, region=k)
+    # elif action == "alert":
+    #     send_mail("Subject", "Mail content")
+    # else:
+    #     print "Can't find action"
