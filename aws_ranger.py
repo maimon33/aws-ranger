@@ -4,9 +4,11 @@ import sys
 import json
 import time as T
 # import sched
+
 import urllib2
 import smtplib
 
+from crontab import CronTab
 from datetime import time, date, timedelta, datetime
 # from threading import Timer
 
@@ -15,8 +17,9 @@ import boto3
 import click
 
 # from wryte import Wryte
-from apscheduler.schedulers.background import BackgroundScheduler
+from daemon import DaemonContext
 from botocore.exceptions import ClientError
+from apscheduler.schedulers.background import BackgroundScheduler
 
 USER_HOME = os.getenv("HOME")
 AWS_RANGER_HOME = '{0}/.aws-ranger'.format(USER_HOME)
@@ -123,11 +126,18 @@ def create_short_instances_dict(all_instances_dictionary, service=False):
     return instance_dict
 
 def read_state_file(state_file):
-    ranger_state = json.load(open(state_file))
-    for region in ranger_state.items():
-        print region
-    print ranger_state
-    pass
+    return json.load(open(state_file))
+
+def set_schedule_section(policy, state_file):
+    # TODO: Take policy arg and update Next Task and Time
+    #       Use function to return dict with both items
+    state_file = json.load(open(state_file))
+    schedule['_schedule'] = {'Policy': policy,
+                            'Next Task': 'Stop',
+                            'Time': '9PM'}
+    with open(state_file, 'w') as file:
+        json.dump(schedule, file, indent=4, sort_keys=True)
+
 class AWSRanger(object):
     def __init__(self, profile_name):
         try:
@@ -287,22 +297,33 @@ class Scheduler(object):
         start_of_week = self.start_of_day(next_sunday)
         return start_of_week
 
-    def get_seconds_difference(self):
+    def get_next_action(self, policy):
+        today = datetime.now()
+        if policy == 'full':
+            if today < self.end_of_day(today):
+                return ['stop', self.end_of_day(today)]
+            if today > self.end_of_day(today):
+                return ['start', self.start_of_day(self.next_weekday)]
+        elif policy == 'nightly':
+            if today < self.end_of_day(today):
+                return ['stop', self.end_of_day(today)]
+        elif policy == 'workweek':
+            if today < self.end_of_week(today):
+                return ['stop', self.end_of_week(end_of_week())]
+    
+    def get_seconds_difference(self, target):
         now = datetime.now()
-        target = self.end_of_week()
         seconds = (target - now).seconds
         return seconds
-
-    def set_policy(self, policy):
-        pass
     
     def print_event(self):
         print 'EVENT:', T.time(), "Hi"
         return 'EVENT:', T.time(), "Hi"
     
-    def get_scheduled_event_command(self, action, target_datetime):
+    def get_schedule(self, policy):
         # print dir(apscheduler)
-        sched = BackgroundScheduler(trigger='cron')
+        # sched = BackgroundScheduler(trigger='cron')
+        sched = BackgroundScheduler(trigger='date')
         sched.start()
         print sched.print_jobs()
         # print sched.add_job()
@@ -328,7 +349,9 @@ class Scheduler(object):
         # print dir(Timer)
         # T.sleep(15)
         # print T.time()
-        
+
+    def set_next_action(self, action, time):
+        pass
 
 CLICK_CONTEXT_SETTINGS = dict(
     help_option_names=['-h', '--help'],
@@ -448,13 +471,17 @@ def terminate(region):
     for k, v in stop_list.items():
         ranger.terminate_instnace(v, region=k)
 
-@ranger.command('deamon')
+@ranger.command('daemon')
 @click.pass_obj
 @click.argument('policy', default="nightly")
 @click.argument('action', default="stop")
-# @click.argument('region', default=False)
-def deamon(ctx, policy, action):
-    """Run aws-ranger as a deamon.\n
+@click.argument('region', default=False)
+@click.option('--init',
+              is_flag=True,
+              help="Sets daemon, insert _schedule key to state_file\n"
+                   "inits schedule")
+def daemon(ctx, policy, action, region, init):
+    """Run aws-ranger as a daemon.\n
     
     \b 
     Control aws-ranger by setting the policy,
@@ -468,7 +495,9 @@ def deamon(ctx, policy, action):
     CONFIG_PATH = ctx[0]
     STATE_FILE = ctx[1]
 
-    print policy
+    if policy not in ['nightly', 'workweek', 'full']:
+        print "Policy not Found! Review and select one of three"
+        sys.exit()
 
     # Checks you are running with sudo privileges
     # if os.getuid() != 0:
@@ -476,23 +505,42 @@ def deamon(ctx, policy, action):
     #     sys.exit()
 
     ranger = AWSRanger(profile_name='default')
+    scheduler = Scheduler('object')
     
     if os.path.isfile(STATE_FILE):
-        if _yes_or_no("State file exists, Do you want to overwrite it?"):
-            instances = ranger.create_state_file(ranger.get_instances(), STATE_FILE)
+        if init:
+            if _yes_or_no("State file exists, Do you want to overwrite it?"):
+                instances = ranger.create_state_file(ranger.get_instances(), 
+                                                    STATE_FILE)
+                set_schedule_section(policy, STATE_FILE)
+            else:
+                print "Aborting! Needs to write schedule section into state file"
+                sys.exit()
         else:
-            instances = read_state_file(STATE_FILE)
+            state_file = read_state_file(STATE_FILE)
+            
+            try:
+                schedule = state_file['_schedule']
+            # TODO: Found state file. starting daemon and keeping doing the good work
+            # Check if schedule section is found. else print missing and run with init
+            except KeyError:
+                print "Missing schedule config. Run again with --init flag"
+                sys.exit()
+            
+            scheduler.get_next_action(policy)
+            
+    else:
+        instances = read_state_file(STATE_FILE)
     
-    state_file = json.load(open(STATE_FILE))
-    state_file['_schedule'] = {'Policy': policy,
-                               'Next Task': 'Stop',
-                               'Time': '9PM'}
-    with open(STATE_FILE, 'w') as file:
-        json.dump(state_file, file, indent=4, sort_keys=True)
 
+    # TODO: start logic only after everyting is ready
+    # if not instances:
+    #     print "No Instances found!"
+    #     scheduler._daemonize(scheduler.service_action(policy), policy)
+    # else:
+    #     managed_list = create_short_instances_dict(instances, service=True)
     
-    managed_list = create_short_instances_dict(instances, service=True)
-    
+
     # if action == "stop":
     #     for k, v in managed_list.items():
     #         ranger.stop_instnace(v, region=k)
