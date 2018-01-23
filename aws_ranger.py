@@ -172,7 +172,10 @@ class AWSRanger(object):
     def fetch_instances(self, region=False):
         return self.aws_client(region_name=region).instances.filter(Filters=[])
 
-    def get_instances(self, instances_state="running", region=False):
+    def get_instances(self, 
+                      config_path, 
+                      instances_state="running", 
+                      region=False):
         all_instances = []
         region_list = []
 
@@ -251,19 +254,19 @@ class AWSRanger(object):
         for instance in instance_list:
             print('Starting instance: {}'.format(instance))
             self.aws_client(region_name=region).instances.filter(
-                InstanceIds=instance).start()
+                InstanceIds=[instance]).start()
 
     def stop_instnace(self, instance_list, region=False):
         for instance in instance_list:
             print('Stopping instance: {}'.format(instance))
             self.aws_client(region_name=region).instances.filter(
-                InstanceIds=instance).stop()
+                InstanceIds=[instance]).stop()
 
     def terminate_instnace(self, instance_list, region=False):
         for instance in instance_list:
             print('Terminating instance: {}'.format(instance))
             self.aws_client(region_name=region).instances.filter(
-                InstanceIds=instance_list).terminate()
+                InstanceIds=[instance]).terminate()
 
 class Scheduler(object):
     def __init__(self, object):
@@ -364,22 +367,18 @@ CLICK_CONTEXT_SETTINGS = dict(
 @click.option('--init',
               is_flag=True,
               help="Config aws-ranger for first use")
-@click.option('-v',
-              '--verbose',
-              is_flag=True,
-              help="display run log in verbose mode")
-@click.option('-d',
-              '--debug',
-              is_flag=True,
-              help="debug new features")
-def ranger(ctx, init, verbose, debug):
+@click.option('-x',
+              '--execute',
+              help="""
+What action to carry out on instances found?         
+you can Stop, Start or Terminate""")
+@click.argument('region', default=False)
+def ranger(ctx, init, execute, region):
     """Round up your AWS instances
 
     Scout for Instances in all AWS Regions
     """
-    # if verbose:
-        # wryter = Wryte(name='wryte', level='debug')
-        
+
     if not internet_on():
         print "No Internet connection"
         sys.exit()
@@ -412,64 +411,34 @@ def ranger(ctx, init, verbose, debug):
         sys.exit()
     
     ranger = AWSRanger(profile_name='default')
+
+    instances = ranger.get_instances(CONFIG_PATH)
     
-    if debug:
-        timer = Scheduler(object)
-        # timer.set_policy("policy")
-        timer.get_scheduled_event_command("stop", "nightly")
-        # print timer.get_seconds_difference(CONFIG_PATH)
-        
+    try:
+       if execute.lower():
+            if execute.lower() == 'stop':
+                stop_list = create_short_instances_dict(instances)
+                for k, v in stop_list.items():
+                    ranger.stop_instnace(v, region=k)
+            elif execute.lower() == 'start':
+                start_list = create_short_instances_dict(instances)
+                for k, v in start_list.items():
+                    ranger.start_instnace(v, region=k)
+            elif execute.lower() == 'terminate':
+                terminate_list = create_short_instances_dict(instances)
+                stopped_list = create_short_instances_dict(
+                    ranger.get_instances(CONFIG_PATH, 
+                                         instances_state="stopped"))
+                for k, v in terminate_list.items():
+                    ranger.terminate_instnace(v, region=k)
+                for k, v in stopped_list.items():
+                    ranger.terminate_instnace(v, region=k)
+    except AttributeError:
+        print "Did not receive action to execute. printing current state"
+
+    if ctx.invoked_subcommand is None and execute is None:
+        print _format_json(instances)
         sys.exit()
-    
-    if ctx.invoked_subcommand is None:
-        instances = create_short_instances_dict(ranger.get_instances())
-        print instances
-
-@ranger.command('stop')
-@click.pass_obj
-@click.argument('region', default=False)
-def stop(ctx, region):
-    """Stop instances Found by aws-ranger
-    """
-    CONFIG_PATH = ctx[0]
-    ranger = AWSRanger(profile_name='default')
-
-    instances = ranger.get_instances()
-    stop_list = create_short_instances_dict(instances)
-    for k, v in stop_list.items():
-        ranger.stop_instnace(v, region=k)
-
-@ranger.command('start')
-@click.pass_obj
-@click.argument('region', default=False)
-def start(ctx, region):
-    """Start managed instances Found by aws-ranger
-    """
-    CONFIG_PATH = ctx[0]
-    ranger = AWSRanger(profile_name='default')
-
-    instances = ranger.get_instances()
-    start_list = create_short_instances_dict(instances)
-    for k, v in start_list.items():
-        ranger.start_instnace(v, region=k)
-
-@ranger.command('terminate')
-@click.pass_obj
-@click.argument('region', default=False)
-def terminate(region):
-    """Terminate instances Found by aws-ranger
-    """
-    ranger = AWSRanger(profile_name='default')
-
-    instances = ranger.get_instances()
-    stop_list = create_short_instances_dict(instances)
-    for k, v in stop_list.items():
-        ranger.terminate_instnace(v, region=k)
-
-    instances = ranger.get_instances(instances_state="stopped")
-    stop_list = create_short_instances_dict(instances)
-    for k, v in stop_list.items():
-        ranger.terminate_instnace(v, region=k)
 
 @ranger.command('daemon')
 @click.pass_obj
@@ -478,8 +447,9 @@ def terminate(region):
 @click.argument('region', default=False)
 @click.option('--init',
               is_flag=True,
-              help="Sets daemon, insert _schedule key to state_file\n"
-                   "inits schedule")
+              help="""
+Sets daemon, insert _schedule key to state_file             
+Configures schedule section and policy""")
 def daemon(ctx, policy, action, region, init):
     """Run aws-ranger as a daemon.\n
     
@@ -489,7 +459,7 @@ def daemon(ctx, policy, action, region, init):
     [workweek]: Actions (stop\ terminate) on Instances just before the weekend
     [full]: Actions (stop\ start) on Instances Daily and over the weekend
 
-    Set the action aws-ranger will enforce [stop, terminate, alert]\n
+    Set the Action that aws-ranger will enforce [stop, terminate, alert]\n
     You can limit aws-ranger control to one region.\n
     """
     CONFIG_PATH = ctx[0]
@@ -510,11 +480,11 @@ def daemon(ctx, policy, action, region, init):
     if os.path.isfile(STATE_FILE):
         if init:
             if _yes_or_no("State file exists, Do you want to overwrite it?"):
-                instances = ranger.create_state_file(ranger.get_instances(), 
-                                                    STATE_FILE)
+                instances = ranger.create_state_file(
+                    ranger.get_instances(CONFIG_PATH), STATE_FILE)
                 set_schedule_section(policy, STATE_FILE)
             else:
-                print "Aborting! Needs to write schedule section into state file"
+                print "Aborting! you must add schedule section into state file"
                 sys.exit()
         else:
             state_file = read_state_file(STATE_FILE)
