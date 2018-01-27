@@ -1,7 +1,10 @@
 import os
 import sys
 import json
+import sched
 import logging
+
+from datetime import time, date, timedelta, datetime
 
 import serv
 import boto3
@@ -23,13 +26,15 @@ def _config():
     AWS_ACCESS_KEY_ID=raw_input('Enter Your AWS Access Key ID : ')
     AWS_SECRET_ACCESS_KEY=raw_input('Enter Your AWS Secret Access Key : ')
     AWS_ACCOUNT_ALIAS=raw_input('Enter an Alias for the Account: ')
+    
     config = {"aws-account": {'AWS_ACCOUNT_ALIAS': AWS_ACCOUNT_ALIAS,
                               'AWS_ACCESS_KEY_ID': AWS_ACCESS_KEY_ID, 
                               'AWS_SECRET_ACCESS_KEY': AWS_SECRET_ACCESS_KEY}}
-    with open('{}/{}.json'.format(CONF_DIR, AWS_ACCOUNT_ALIAS), 'w') as f:
-        json.dump(config, f)
+    with open('{0}/{1}.json'.format(CONF_DIR, AWS_ACCOUNT_ALIAS), 'w') as file:
+        json.dump(config, file, indent=4)
+    
     global CONFIG_PATH
-    CONFIG_PATH = '{}/{}.json'.format(CONF_DIR, AWS_ACCOUNT_ALIAS)
+    CONFIG_PATH = '{0}/{1}.json'.format(CONF_DIR, AWS_ACCOUNT_ALIAS)
 
 try:
     if not os.path.exists(CONF_DIR):
@@ -53,19 +58,30 @@ except NameError:
         cfg = json.load(config_file)["aws-account"]
 
 CONFIG_PATH = '{0}/{1}.json'.format(CONF_DIR, cfg['AWS_ACCOUNT_ALIAS'])
+STATE_FILE = '{0}/{1}.state'.format(HOME_DIR, cfg['AWS_ACCOUNT_ALIAS'])
+
+TAGS_EXCLUDE_KEY_WORDS = ["prod", "Production", "do not stop"]
 
 def _format_json(dictionary):
     return json.dumps(dictionary, indent=4, sort_keys=True)
 
 def create_short_instances_dict(all_instances_dictionary):
     instance_dict ={}
+
     for region in all_instances_dictionary.items():
-        if region[1]:
-            region_list = region[1][region[0]]
-            instances_ids_list = []
-            for instance in region_list:
-                instances_ids_list.append(region[1][region[0]][0]["ID"])
-                instance_dict[region[0]] = instances_ids_list
+        instances_ids_list = []
+        try:
+            region[1]["running"]
+            region[1]["stopped"]
+            region[1]["exclude"]
+        except KeyError:
+            region[1]["Region State"] = "Region vacent"
+        
+        for state in region[1]:
+            if state in {"running", "stopped"}:
+                for instance in region[1][state]:
+                    instances_ids_list.append(instance["ID"])
+                    instance_dict[region[0]] = instances_ids_list
     return instance_dict
 
 class aws_ranger():    
@@ -99,6 +115,9 @@ class aws_ranger():
             region_list.append(region_api_id)
         return region_list
 
+    def fetch_instances(self, region=False):
+        return self.aws_client(region_name=region).instances.filter(Filters=[])
+
     def get_instances(self, instances_state="running", region=False):
         all_instances = []
         region_list = []
@@ -110,23 +129,49 @@ class aws_ranger():
                 region_list.append(region)
 
         all_instances = {}
+        state_file_dictionary = {}
+
         for region in region_list:
-            instance_list = []
+            excluded_instance_list = []
+            running_instance_list = []
+            stopped_instance_list = []
             region_inventory = {}
-            instances = self.aws_client(region_name=region).instances.filter(
-                Filters=[{'Name': 'instance-state-name',
-                          'Values': [instances_state]}])
+            instances = self.fetch_instances(region)
             for instance in instances:
                 instance_dict = {}
                 instance_dict['ID'] = instance.id
+                instance_dict['State'] = instance.state['Name']
                 instance_dict['Type'] = instance.instance_type
                 instance_dict['Public DNS'] = instance.public_dns_name
                 instance_dict['Creation Date'] = str(instance.launch_time)
                 instance_dict['Tags'] = instance.tags
-                instance_list.append(instance_dict)
-                region_inventory[region] = instance_list
+                try:
+                    if instance.tags[0]['Value'].lower() in TAGS_EXCLUDE_KEY_WORDS:
+                        excluded_instance_list.append(instance_dict)
+                        region_inventory['exclude'] = excluded_instance_list
+                        continue
+                except TypeError:
+                    instance_dict['Tags'] = [{u'Value': 'none', u'Key': 'Tag'}]
+
+                if instance.state['Name'] == 'stopped':
+                    stopped_instance_list.append(instance_dict)
+                    region_inventory['stopped'] = stopped_instance_list
+                elif instance.state['Name'] == 'running':
+                    running_instance_list.append(instance_dict)
+                    region_inventory['running'] = running_instance_list
             all_instances[region] = region_inventory
         return all_instances
+    
+    def create_state_file(self, dictionary):
+        with open(STATE_FILE, 'w') as file:
+            file.truncate()
+            json.dump(dictionary, file, indent=4)
+        pass
+
+    def start_instnace(self, instance_list, region=False):
+        for instance in instance_list:            
+            self.aws_client(region_name=region).instances.filter(
+                InstanceIds=instance).start()
 
     def stop_instnace(self, instance_list, region=False):
         for instance in instance_list:            
@@ -138,6 +183,24 @@ class aws_ranger():
             self.aws_client(region_name=region).instances.filter(
                 InstanceIds=instance_list).terminate()
 
+class scheduler():
+    current = date.today().strftime('%d/%m/%y %H:%M')
+    dt = datetime.strptime(current, "%d/%m/%y %H:%M")
+    START_OF_DAY = datetime.combine(date.today(),
+                                    time(9, 00))
+    END_OF_DAY = datetime.combine(date.today(), 
+                                  time(18, 00))
+    START_OF_WEEK = dt - timedelta(days=dt.weekday()-1)
+    LAST_DAY_OF_WEEK = START_OF_WEEK + timedelta(days=4)
+
+    def get_seconds_difference(self, target_datetime):
+        now = datetime.now()
+        seconds = (target_datetime - now).seconds
+        return seconds
+
+    def get_scheduled_event_command(self, action, target_datetime):
+        pass
+        
 
 CLICK_CONTEXT_SETTINGS = dict(
     help_option_names=['-h', '--help'],
@@ -163,13 +226,16 @@ def ranger(ctx, verbose, debug):
     ranger = aws_ranger()
     
     if debug:
+        # timer = scheduler()
+        # print timer.get_seconds_difference(timer.END_OF_DAY)
+        ranger.create_state_file(ranger.get_instances())
         sys.exit()
     if verbose:
         logger.setLevel(logging.DEBUG)
     
     if ctx.invoked_subcommand is None:
-        instances = ranger.get_instances()
-        print instances
+        instances = create_short_instances_dict(ranger.get_instances())
+        # print instances
     else:
         pass
 
