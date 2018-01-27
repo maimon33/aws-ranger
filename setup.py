@@ -13,8 +13,10 @@ setup(
         ],
     },
     install_requires=[
-        'boto3==1.4.4',
         'click==6.6',
-        'Serv==0.3.0',
+        'boto3==1.4.4',
+        'wryte==0.1.1',
+        'psutil==5.4.3',
+        'python-crontab==2.2.8',
     ]
 )

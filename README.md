@@ -11,13 +11,13 @@ This will prompt for your AWS creds and account alias of your choice and map you
 You later could run it again but with an action: `stop, start` OR `terminate`
 
 
-#### Install
+### Install
 `pip install https://github.com/maimon33/aws-ranger/archive/master.zip`
 
-#### Basic usage
+### Basic usage
 * get current state
 ```
-$ aws-ranger
+$ aws-ranger -r all
 Did not receive action to execute. printing current state
 {
     "ap-northeast-1": {}, 
@@ -37,6 +37,15 @@ Did not receive action to execute. printing current state
     "us-west-2": {}
 }
 ```
+* get current to default region
+
+```
+$ aws-ranger
+{
+    "eu-west-1": {}
+}
+```
+
 * terminate instances without protected tags
 ```
 $ aws-ranger -x terminate
@@ -46,9 +55,9 @@ Terminating instance: i-054c4adfb5d06e3de
 Terminating instance: i-0c54eaa6746f91b63
 ```
 
-#### Daemon mode
+### Cron mode
 
 **not operational!**<br>
-You can have aws-ranger run in the background and control your instance on a time windows basis.<br>
+You can have aws-ranger run in by cron and control your instance continuously.<br>
 Stop all instances out of working hours.<br>
 _you can exclude instances based on tags_
