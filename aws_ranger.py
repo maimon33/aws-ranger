@@ -116,12 +116,12 @@ def create_config_file(config_path, profile_name="default"):
             print('Config file found. Try to run aws-ranger without --config')
             sys.exit()
 
-def read_config_file(config_path, requested_data, profile_name="default"):
+def read_json_file_section(config_path, requested_data, profile_name="default"):
     ranger_config = json.load(open(config_path))
     return ranger_config[requested_data]
 
 def send_mail(config_path, subject, msg):
-    email_config = read_config_file(config_path, "EMAIL")
+    email_config = read_json_file_section(config_path, "EMAIL")
     server = smtplib.SMTP('smtp.gmail.com', 587)
     server.starttls()
     server.login(email_config["GMAIL_ACCOUNT"], 
@@ -300,7 +300,7 @@ class AWSRanger(object):
                 instance_dict['Tags'] = instance.tags
                 try:
                     if instance.tags[0]['Value'].lower() in \
-                    read_config_file(config_path, "EXCLUDE_TAGS"):
+                    read_json_file_section(config_path, "EXCLUDE_TAGS"):
                         excluded_instance_list.append(instance_dict)
                         region_inventory['exclude'] = excluded_instance_list
                         continue
@@ -338,7 +338,30 @@ class AWSRanger(object):
             print('Terminating instance: {}'.format(instance))
             self.aws_client(region_name=region).instances.filter(
                 InstanceIds=[instance]).terminate()
-
+    
+    def executioner(self, config_path, instances, action="pass"):
+        try:
+            if action.lower() == 'stop':
+                stop_list = create_short_instances_dict(instances)
+                for k, v in stop_list.items():
+                    ranger.stop_instnace(v, region=k)
+            elif action.lower() == 'start':
+                start_list = create_short_instances_dict(instances)
+                for k, v in start_list.items():
+                    ranger.start_instnace(v, region=k)
+            elif action.lower() == 'terminate':
+                terminate_list = create_short_instances_dict(instances)
+                stopped_list = create_short_instances_dict(
+                    ranger.get_instances(config_path, 
+                                        instances_state="stopped"))
+                for k, v in terminate_list.items():
+                    ranger.terminate_instnace(v, region=k)
+                for k, v in stopped_list.items():
+                    ranger.terminate_instnace(v, region=k)
+            elif action == 'pass':
+                pass
+        except AttributeError:
+            pass
 class Scheduler(object):
     def __init__(self, object):
         pass
@@ -394,7 +417,7 @@ class Scheduler(object):
                 return ['stop', take_five]
             elif now < self.end_of_week():
                 return ['stop', self.end_of_week()]
-    
+
     def set_schedule_section(self, policy, state_file):
         next_task = self.get_next_action(policy)
         schedule_info = {'policy': policy, 
@@ -403,6 +426,11 @@ class Scheduler(object):
         update_dictionary(state_file, '_schedule', schedule_info)
         return schedule_info
     
+    def compare_times(self, target_time):
+        datetime_convert = datetime.strptime(target_time, '%Y-%m-%d %H:%M:%S')
+        if datetime_convert > datetime.now():
+            return True
+
     def cron_run(self, 
                  config_path, 
                  state_file, 
@@ -421,7 +449,10 @@ class Scheduler(object):
         instances = ranger.get_instances(config_path, region=region)
         update_dictionary(state_file, '_schedule', schedule_info)
         update_json_file(state_file, instances)
-        print schedule_info["Time"]
+        next_run = read_json_file_section(state_file, "_schedule")
+        if self.compare_times(next_run["Time"]):
+            print "Time for action!", execute
+            ranger.executioner(config_path, instances, action=execute)
 
 CLICK_CONTEXT_SETTINGS = dict(
     help_option_names=['-h', '--help'],
@@ -441,7 +472,6 @@ CLICK_CONTEXT_SETTINGS = dict(
                    ' Default to "eu-west-1"')
 @click.option('-x',
               '--execute',
-              default='pass',
               help=' What action to carry out on instances not protected?   \b'
                    ' Stop, Start or Terminate ')
 def ranger(ctx, init, region, execute):
@@ -486,29 +516,7 @@ def ranger(ctx, init, region, execute):
 
     instances = ranger.get_instances(CONFIG_PATH, region=region)
     
-    try:
-       if execute.lower():
-            if execute.lower() == 'stop':
-                stop_list = create_short_instances_dict(instances)
-                for k, v in stop_list.items():
-                    ranger.stop_instnace(v, region=k)
-            elif execute.lower() == 'start':
-                start_list = create_short_instances_dict(instances)
-                for k, v in start_list.items():
-                    ranger.start_instnace(v, region=k)
-            elif execute.lower() == 'terminate':
-                terminate_list = create_short_instances_dict(instances)
-                stopped_list = create_short_instances_dict(
-                    ranger.get_instances(CONFIG_PATH, 
-                                         instances_state="stopped"))
-                for k, v in terminate_list.items():
-                    ranger.terminate_instnace(v, region=k)
-                for k, v in stopped_list.items():
-                    ranger.terminate_instnace(v, region=k)
-            elif execute == 'pass':
-                pass
-    except AttributeError:
-        print "Did not receive action to execute. printing current state"
+    ranger.executioner(CONFIG_PATH, instances, action=execute)
     
     if ctx.invoked_subcommand is None:
         print _format_json(instances)
@@ -590,10 +598,8 @@ def cron(ctx, policy, execute, init, stop):
                             command=CURRENT_FILE,
                             args=args,
                             comment="aws-ranger")
-    else:
-        confirm_state_file(STATE_FILE)
-    
-    if os.path.isfile(STATE_FILE) and confirm_state_file(STATE_FILE):                         
+
+    if os.path.isfile(STATE_FILE) and confirm_state_file(STATE_FILE):
         scheduler.cron_run(CONFIG_PATH,
                            STATE_FILE,
                            region,
@@ -601,5 +607,5 @@ def cron(ctx, policy, execute, init, stop):
                            execute,
                            instances)
     else:
-        print "missing state file"
+        print "State file missing or corrupted. run `aws-ranger cron --init`"
         sys.exit()
