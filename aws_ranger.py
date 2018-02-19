@@ -2,6 +2,8 @@ import re
 import os
 import sys
 import json
+import socket
+import getpass
 import time as Time
 
 import urllib2
@@ -17,8 +19,12 @@ import psutil
 from wryte import Wryte
 from botocore.exceptions import ClientError
 
-USER_HOME = os.getenv("HOME")
 CURRENT_FILE = sys.argv[0]
+USER_NAME = getpass.getuser()
+USER_HOME = os.getenv("HOME")
+HOST_NAME = socket.gethostname()
+PUBLIC_IP = urllib2.urlopen('http://ip.42.pl/raw').read()
+
 AWS_RANGER_HOME = '{0}/.aws-ranger'.format(USER_HOME)
 BOTO_CREDENTIALS = '{0}/.aws/credentials'.format(USER_HOME)
 
@@ -34,13 +40,19 @@ def _internet_on():
     except socket.timeout, e:
         return False
 
+def _safe_remove(target):
+    try:
+        os.remove(target)
+    except OSError:
+        print "Did not find file!"
+
 def _yes_or_no(question):
     while True:
         reply = str(raw_input(question+' (y/n): ')).lower().strip()
         if reply[0] == 'y':
             return True
         else:
-            print 'You replied No. Bye'
+            print 'You replied No.'
             return False
 
 def _find_duplicate_processes(name):
@@ -85,38 +97,71 @@ def _config_cronjob(action, command=None, args=None, comment=None):
         else:
             print "Found no jobs"
 
+def working_hours_converter(target):
+    if target.lower() in ["sunday", "monday", "friday", "thursday"]:
+        return True
+    elif target[0].isdigit() and 0 < int(target[0]) < 13:
+        return True
+    else:
+        return False
+
 def create_config_file(config_path, profile_name="default"):
     # wryter = Wryte(name='aws-ranger')
     aws_ranger_config = {}
     email_dictionary = {}
-    if os.path.isfile(config_path):
-        if _yes_or_no("Config file exist, Do you wish to overwrite?"):
-            print('\nCreating config file...')
-            
-            # Tags section
-            default_exclude_tags = ["prod", "production", "free range"]
-            text = '\nPlease enter tag values to exclude them '\
-                   'from the aws-ranger (please use comma to separate them) '\
-                   'prod, production, free range: '
-            exclude_tags = raw_input(text).split(",")
-            if len(exclude_tags) == 1:
-                exclude_tags = default_exclude_tags
-            aws_ranger_config["EXCLUDE_TAGS"] = exclude_tags
+    
+    # Config section
 
-            # Email section
-            email_dictionary['GMAIL_ACCOUNT'] = raw_input("Gmail account? ")
-            email_dictionary['GMAIL_PASSWORD'] = raw_input("Gmail password? ")
-            email_dictionary['DESTINATION_EMAIL'] = raw_input(
-                "Notification Destination? ")
-            aws_ranger_config["EMAIL"] = email_dictionary
-            with open(config_path, 'w') as file:
-                json.dump(aws_ranger_config, file, indent=4)
+    # Tags
+    default_exclude_tags = ["prod", "production", "free range"]
+    tags_text = '\nPlease enter tag values to exclude them '\
+            'from aws-ranger (use comma to separate items) '\
+            '\nDefaults = [prod, production, free range]: '
+    exclude_tags = raw_input(tags_text).split(",")
+    if len(exclude_tags) == 0:
+        exclude_tags = default_exclude_tags
+    aws_ranger_config["EXCLUDE_TAGS"] = exclude_tags
 
-        else:
-            print('Config file found. Try to run aws-ranger without --config')
-            sys.exit()
+    # Working Hours
+    default_working_hours = {"1.First Day of the Week": "Sunday",
+                             "2.Last Day of the week": "Thursday",
+                             "3.Start of working Day": "9AM",
+                             "4.End of working Day": "6PM"}
+    if _yes_or_no('\nDo you agree with these working hours? '\
+                  '\n{} '.format(_format_json(default_working_hours))):
+        working_hours = default_working_hours
+        aws_ranger_config["Working Hours"] = working_hours
+    else:
+        first_day = working_hours_converter(
+            raw_input("First Day of the Week? : "))
+        last_day = working_hours_converter(
+            raw_input("\nLast Day of the week? : "))
+        start_of_day = working_hours_converter(
+            raw_input("Start of working day? : "))
+        end_of_day = working_hours_converter(
+            raw_input("End of working day? (12H format) : "))
+        
+        working_hours = {"First Day of the Week": first_day,
+                         "Last Day of the week": last_day,
+                         "Start of working Day": '{}AM'.format(
+                             start_of_day),
+                         "End of working Day": '{}PM'.format(
+                             end_of_day)}
+        aws_ranger_config["Working Hours"] = working_hours
 
-def read_json_file_section(config_path, requested_data, profile_name="default"):
+    # Email section
+    email_dictionary['GMAIL_ACCOUNT'] = raw_input("\nGmail account? ")
+    email_dictionary['GMAIL_PASSWORD'] = raw_input("Gmail password? ")
+    email_dictionary['DESTINATION_EMAIL'] = raw_input(
+        "Notification Destination? ")
+    aws_ranger_config["EMAIL"] = email_dictionary
+    
+    with open(config_path, 'w') as file:
+        json.dump(aws_ranger_config, file, indent=4)
+
+def read_json_file_section(config_path, 
+                           requested_data, 
+                           profile_name="default"):
     ranger_config = json.load(open(config_path))
     return ranger_config[requested_data]
 
@@ -197,9 +242,9 @@ def create_state_file(dictionary, state_file):
     with open(state_file, 'w') as file:
         json.dump(state_file_dictionary, file, indent=4, sort_keys=True)
 
-def confirm_state_file(state_file_path):
+def confirm_state_file(file_path):
     try:
-        state_file = read_json_file(state_file_path)
+        state_file = read_json_file(file_path)
         schedule = state_file['_schedule']
         return True
     except ValueError:
@@ -216,16 +261,16 @@ def confirm_state_file(state_file_path):
 def read_json_file(json_file):
     return json.load(open(json_file))
 
-def update_json_file(state_file_path, new_dictionary):
-    orig_state_file = json.load(open(state_file_path))
+def update_json_file(file_path, new_dictionary):
+    orig_state_file = json.load(open(file_path))
     orig_state_file.update(new_dictionary)
-    with open(state_file_path, 'w') as file:
+    with open(file_path, 'w') as file:
         json.dump(orig_state_file, file, indent=4, sort_keys=True)
 
-def update_dictionary(state_file_path, section, keys_and_values):
-    state_file = json.load(open(state_file_path))
+def update_dictionary(file_path, section, keys_and_values):
+    state_file = json.load(open(file_path))
     state_file[section] = keys_and_values
-    with open(state_file_path, 'w') as file:
+    with open(file_path, 'w') as file:
         json.dump(state_file, file, indent=4, sort_keys=True)
 
 class AWSRanger(object):
@@ -262,7 +307,7 @@ class AWSRanger(object):
     def fetch_instances(self, region=False):
         return self.aws_client(region_name=region).instances.filter(Filters=[])
 
-    def get_instances(self, 
+    def get_instances(self,
                       config_path, 
                       instances_state="running", 
                       region=False):
@@ -316,10 +361,10 @@ class AWSRanger(object):
             all_instances[region] = region_inventory
         return all_instances
 
-    def update_tags(self):
-        #TODO: Update tags for ranger purposes
-        # set last action date, next action date, user that ran ranger, ip of ranger
-        pass
+    def update_tags(self, instance_list, tags_list, region):
+        for instance in instance_list:
+            self.aws_client(region_name=region).create_tags(
+                Resources=[instance], Tags=tags_list)
 
     def start_instnace(self, instance_list, region=False):
         for instance in instance_list:
@@ -339,31 +384,39 @@ class AWSRanger(object):
             self.aws_client(region_name=region).instances.filter(
                 InstanceIds=[instance]).terminate()
     
-    def executioner(self, config_path, instances, action="pass"):
+    def executioner(self,
+                    config_path,
+                    instances,
+                    tags_list,
+                    action="pass"):
         try:
             if action.lower() == 'stop':
                 stop_list = create_short_instances_dict(instances)
                 for k, v in stop_list.items():
-                    ranger.stop_instnace(v, region=k)
+                    self.stop_instnace(v, region=k)
+                    self.update_tags(v, tags_list, region=k)
             elif action.lower() == 'start':
                 start_list = create_short_instances_dict(instances)
                 for k, v in start_list.items():
-                    ranger.start_instnace(v, region=k)
+                    self.start_instnace(v, region=k)
+                    self.update_tags(v, tags_list, region=k)
             elif action.lower() == 'terminate':
                 terminate_list = create_short_instances_dict(instances)
                 stopped_list = create_short_instances_dict(
-                    ranger.get_instances(config_path, 
-                                        instances_state="stopped"))
+                    self.get_instances(config_path, 
+                                       instances_state="stopped"))
                 for k, v in terminate_list.items():
-                    ranger.terminate_instnace(v, region=k)
+                    self.terminate_instnace(v, region=k)
                 for k, v in stopped_list.items():
-                    ranger.terminate_instnace(v, region=k)
+                    self.terminate_instnace(v, region=k)
             elif action == 'pass':
                 pass
         except AttributeError:
             pass
+
 class Scheduler(object):
-    def __init__(self, object):
+    def __init__(self, config_path):
+        aws_ranger_config = read_json_file_section(config_path, "_schedule")
         pass
 
     def start_of_day(self, day):
@@ -389,7 +442,7 @@ class Scheduler(object):
     
     def start_of_next_week(self):
         next_sunday = self.next_weekday()
-        while next_sunday.weekday() != 6: # 3 for next Sunday
+        while next_sunday.weekday() != 6: # 6 for next Sunday
             next_sunday = next_sunday + timedelta(days=1)
         start_of_week = self.start_of_day(next_sunday)
         return start_of_week
@@ -427,8 +480,8 @@ class Scheduler(object):
         return schedule_info
     
     def compare_times(self, target_time):
-        datetime_convert = datetime.strptime(target_time, '%Y-%m-%d %H:%M:%S')
-        if datetime_convert > datetime.now():
+        target_convert = datetime.strptime(target_time, '%Y-%m-%d %H:%M:%S')
+        if target_convert > datetime.now():
             return True
 
     def cron_run(self, 
@@ -451,8 +504,12 @@ class Scheduler(object):
         update_json_file(state_file, instances)
         next_run = read_json_file_section(state_file, "_schedule")
         if self.compare_times(next_run["Time"]):
-            print "Time for action!", execute
-            ranger.executioner(config_path, instances, action=execute)
+            ranger.executioner(config_path, 
+                               instances, 
+                               action=next_run["Next Task"])
+        else:
+            pass
+
 
 CLICK_CONTEXT_SETTINGS = dict(
     help_option_names=['-h', '--help'],
@@ -490,19 +547,30 @@ def ranger(ctx, init, region, execute):
     STATE_FILE = '{0}/{1}.state'.format(AWS_RANGER_HOME,
                                         DEFAULT_AWS_PROFILE)
 
-    if init:
-        confirm = 'You are about to create Home dir for aws-ranger.\n'
-        'Continue?'
-        if os.path.exists(AWS_RANGER_HOME):
-            print 'aws-ranger was already initiated'
-            sys.exit()
+    tags_list = [{"Key":"aws-ranger Host", 
+                  "Value":"{0} @ {1}".format(HOST_NAME, PUBLIC_IP)},
+                 {"Key":"aws-ranger Last Action",
+                  "Value":"{0} @ {1}".format(
+                      execute, Time.strftime("%Y-%m-%d %H:%M:%S"))},
+                 {"Key":"aws-ranger User",
+                  "Value":USER_NAME}]
 
-        if _yes_or_no(confirm):
-            os.makedirs(AWS_RANGER_HOME)
-            create_config_file(CONFIG_PATH, DEFAULT_AWS_PROFILE)
-            sys.exit()
+    if init:
+        if os.path.exists(AWS_RANGER_HOME):
+            print "aws-ranger Home exists, checking config..."
+            if os.path.exists(CONFIG_PATH):
+                if _yes_or_no(' aws-ranger was already initiated, '\
+                              ' Overwrite config? '):
+                    _safe_remove(CONFIG_PATH)
+                    create_config_file(CONFIG_PATH, DEFAULT_AWS_PROFILE)
+            else:
+                print "Creating aws-ranger config file"
+                create_config_file(CONFIG_PATH, DEFAULT_AWS_PROFILE)
         else:
-            sys.exit()
+            if _yes_or_no(' You are about to create Home dir for aws-ranger.\n '
+                          ' Continue? '):
+                os.makedirs(AWS_RANGER_HOME)
+                create_config_file(CONFIG_PATH, DEFAULT_AWS_PROFILE)
     
     if not os.path.exists(AWS_RANGER_HOME):
         print ' Missing aws-ranger HOME dir\n'\
@@ -516,7 +584,7 @@ def ranger(ctx, init, region, execute):
 
     instances = ranger.get_instances(CONFIG_PATH, region=region)
     
-    ranger.executioner(CONFIG_PATH, instances, action=execute)
+    ranger.executioner(CONFIG_PATH, instances, tags_list, action=execute)
     
     if ctx.invoked_subcommand is None:
         print _format_json(instances)
@@ -566,14 +634,14 @@ def cron(ctx, policy, execute, init, stop):
     if stop:
         _kill_process("aws-ranger")
         _config_cronjob("unset", comment="aws-ranger")
-        os.remove(STATE_FILE)
+        _safe_remove(STATE_FILE)
         sys.exit()
     
     if _find_duplicate_processes("aws-ranger"):
         print "aws-ranger already running! quiting..."
         sys.exit()
 
-    scheduler = Scheduler('object')
+    scheduler = Scheduler(config_path=CONFIG_PATH)
 
     if policy not in ['nightly', 'workweek', 'full']:
         print "Policy not Found! Review and select one of three"
