@@ -184,31 +184,46 @@ def find_profiles(file):
         profiles_list.append(match.strip("[]"))
     return profiles_list
         
-def create_short_instances_dict(all_instances_dictionary, service=False):
+def create_short_instances_dict(all_instances_dictionary, execute_action, service=False):
     instance_dict ={}
 
     for region in all_instances_dictionary.items():
         instances_ids_list = []
+        stopped_instances_ids = []
+        running_instances_ids = []
+        managed_instances_ids = []
         try:
-            region[1]["running"]
-            region[1]["stopped"]
-            region[1]["exclude"]
-            region[1]["managed"]
+            if region[1] in ["running", "stopped", "exclude", "managed"]:
+                pass
         except KeyError:
             region[1]["Region State"] = "Region vacent"
         
+        for state in region[1]:
+            if state == "managed":
+                for instance in region[1][state]:
+                    managed_instances_ids.append(instance["_ID"])
+            
+            if state == "running":
+                for instance in region[1][state]:
+                    running_instances_ids.append(instance["_ID"])
+
+            if state == "stopped":
+                for instance in region[1][state]:
+                    stopped_instances_ids.append(instance["_ID"])
+
         if service:
-            for state in region[1]:
-                if state in {"managed"}:
-                    for instance in region[1][state]:
-                        instances_ids_list.append(instance["_ID"])
-                        instance_dict[region[0]] = instances_ids_list
+            instance_dict[region[0]] = managed_instances_ids
         else:
-            for state in region[1]:
-                if state in {"running", "stopped"}:
-                    for instance in region[1][state]:
-                        instances_ids_list.append(instance["_ID"])
-                        instance_dict[region[0]] = instances_ids_list
+            if execute_action == "stop":
+                instances_ids_list = managed_instances_ids + \
+                                     running_instances_ids
+                instance_dict[region[0]] = instances_ids_list
+            if execute_action == "terminate":
+                instances_ids_list  = managed_instances_ids + \
+                                      running_instances_ids + \
+                                      stopped_instances_ids
+                instance_dict[region[0]] = instances_ids_list
+
     return instance_dict
 
 def create_state_file(dictionary, state_file):
@@ -319,9 +334,6 @@ class AWSRanger(object):
         else:
             for region in self.get_all_regions():
                 try:
-                    test = self.fetch_instances(region)
-                    for i in test:
-                        print i
                     region_list.append(region)
                 except ClientError:
                     print "Skipping region: {}".format(region)
@@ -388,26 +400,32 @@ class AWSRanger(object):
                     config_path,
                     instances,
                     tags_list,
+                    region=False,
                     action="pass"):
         try:
             if action.lower() == 'stop':
-                stop_list = create_short_instances_dict(instances)
-                for k, v in stop_list.items():
+                stop_dictionary = create_short_instances_dict(
+                    instances, action.lower())
+                for k, v in stop_dictionary.items():
                     self.stop_instnace(v, region=k)
                     self.update_tags(v, tags_list, region=k)
             elif action.lower() == 'start':
-                start_list = create_short_instances_dict(instances)
-                for k, v in start_list.items():
+                start_dictionary = create_short_instances_dict(
+                    instances, action.lower())
+                for k, v in start_dictionary.items():
                     self.start_instnace(v, region=k)
                     self.update_tags(v, tags_list, region=k)
             elif action.lower() == 'terminate':
-                terminate_list = create_short_instances_dict(instances)
-                stopped_list = create_short_instances_dict(
+                terminate_dictionary = create_short_instances_dict(
+                    instances, action.lower())
+                #TODO: need to avoid pulling instance twice
+                stopped_dictionary = create_short_instances_dict(
                     self.get_instances(config_path, 
-                                       instances_state="stopped"))
-                for k, v in terminate_list.items():
-                    self.terminate_instnace(v, region=k)
-                for k, v in stopped_list.items():
+                                       region=region, 
+                                       instances_state="stopped"), 
+                    action.lower())
+                new_dict = dict(terminate_dictionary, **stopped_dictionary)
+                for k, v in new_dict.items():
                     self.terminate_instnace(v, region=k)
             elif action == 'pass':
                 pass
@@ -586,7 +604,7 @@ def ranger(ctx, init, region, execute):
     
     ranger.executioner(CONFIG_PATH, instances, tags_list, action=execute)
     
-    if ctx.invoked_subcommand is None:
+    if ctx.invoked_subcommand is None and not execute:
         print _format_json(instances)
         sys.exit()
 
