@@ -15,28 +15,6 @@ You later could run it again but with an action: `stop, start` OR `terminate`
 `pip install https://github.com/maimon33/aws-ranger/archive/master.zip`
 
 ### Basic usage
-* get current state
-```
-$ aws-ranger -r all
-Did not receive action to execute. printing current state
-{
-    "ap-northeast-1": {}, 
-    "ap-northeast-2": {}, 
-    "ap-south-1": {}, 
-    "ap-southeast-1": {}, 
-    "ap-southeast-2": {}, 
-    "ca-central-1": {}, 
-    "eu-central-1": {}, 
-    "eu-west-1": {}, 
-    "eu-west-2": {}, 
-    "eu-west-3": {}, 
-    "sa-east-1": {}, 
-    "us-east-1": {}, 
-    "us-east-2": {}, 
-    "us-west-1": {}, 
-    "us-west-2": {}
-}
-```
 * get current to default region
 
 ```

@@ -101,6 +101,17 @@ def _config_cronjob(action, command=None, args=None, comment=None):
         else:
             print "Found no jobs"
 
+def validate_ranger(ranger_home, config_path):
+    if not os.path.exists(ranger_home):
+        print ' Missing aws-ranger HOME dir...\n Run:\n'\
+              ' aws-ranger --init or create it yourself at ~/.aws-ranger'
+        sys.exit()
+    
+    if not os.path.exists(config_path):
+        print ' Missing aws-ranger config...\n Run:\n'\
+              ' aws-ranger --init '
+        sys.exit()
+
 def working_hours_converter(target):
     if target[0].isdigit() and 0 < int(target[0]) < 13:
         return target
@@ -630,6 +641,7 @@ def ranger(ctx, init, region, execute):
         if os.path.exists(AWS_RANGER_HOME):
             print "aws-ranger Home exists, checking config..."
             if os.path.exists(CONFIG_PATH):
+                print "Hi"
                 if _yes_or_no(' aws-ranger was already initiated, '\
                               ' Overwrite config? '):
                     _safe_remove(CONFIG_PATH)
@@ -643,10 +655,7 @@ def ranger(ctx, init, region, execute):
                 os.makedirs(AWS_RANGER_HOME)
                 create_config_file(CONFIG_PATH, DEFAULT_AWS_PROFILE)
     
-    if not os.path.exists(AWS_RANGER_HOME):
-        print ' Missing aws-ranger HOME dir\n'\
-              ' Run `aws-ranger --config` or create it yourself at ~/.aws-ranger'
-        sys.exit()
+    validate_ranger(AWS_RANGER_HOME, CONFIG_PATH)
     
     ranger = AWSRanger(profile_name='default')
 
@@ -715,6 +724,8 @@ def cron(ctx, policy, execute, init, stop):
     if policy not in ['nightly', 'workweek', 'full']:
         print "Policy not Found! Review and select one of three"
         sys.exit()
+    
+    validate_ranger(AWS_RANGER_HOME, CONFIG_PATH)
     
     if init:
         if os.path.isfile(STATE_FILE):
