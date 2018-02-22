@@ -23,7 +23,7 @@ CURRENT_FILE = sys.argv[0]
 USER_NAME = getpass.getuser()
 USER_HOME = os.getenv("HOME")
 HOST_NAME = socket.gethostname()
-PUBLIC_IP = urllib2.urlopen('http://ip.42.pl/raw').read()
+PUBLIC_IP = json.load(urllib2.urlopen('http://jsonip.com'))['ip']
 
 AWS_RANGER_HOME = '{0}/.aws-ranger'.format(USER_HOME)
 BOTO_CREDENTIALS = '{0}/.aws/credentials'.format(USER_HOME)
@@ -39,6 +39,9 @@ def _internet_on():
         return False
     except socket.timeout, e:
         return False
+
+def _return_digits(string_input):
+    return ''.join(i for i in string_input if i.isdigit())
 
 def _safe_remove(target):
     try:
@@ -123,10 +126,10 @@ def create_config_file(config_path, profile_name="default"):
     aws_ranger_config["EXCLUDE_TAGS"] = exclude_tags
 
     # Working Hours
-    default_working_hours = {"1.First Day of the Week": "Sunday",
-                             "2.Last Day of the week": "Thursday",
-                             "3.Start of working Day": "9AM",
-                             "4.End of working Day": "6PM"}
+    default_working_hours = {"First Day of the Week": "Sunday",
+                             "Last Day of the week": "Thursday",
+                             "Start of working Day": "9AM",
+                             "End of working Day": "6PM"}
     if _yes_or_no('\nDo you agree with these working hours? '\
                   '\n{} '.format(_format_json(default_working_hours))):
         working_hours = default_working_hours
@@ -214,6 +217,9 @@ def create_short_instances_dict(all_instances_dictionary, execute_action, servic
         if service:
             instance_dict[region[0]] = managed_instances_ids
         else:
+            if execute_action == "start":
+                # instances_ids_list 
+                pass
             if execute_action == "stop":
                 instances_ids_list = managed_instances_ids + \
                                      running_instances_ids
@@ -399,9 +405,16 @@ class AWSRanger(object):
     def executioner(self,
                     config_path,
                     instances,
-                    tags_list,
                     region=False,
                     action="pass"):
+        
+        tags_list = [{"Key":"aws-ranger Host", 
+                      "Value":"{0} @ {1}".format(HOST_NAME, PUBLIC_IP)},
+                      {"Key":"aws-ranger Last Action",
+                      "Value":"{0} @ {1}".format(
+                          action, Time.strftime("%Y-%m-%d %H:%M:%S"))},
+                      {"Key":"aws-ranger User",
+                      "Value":USER_NAME}]
         try:
             if action.lower() == 'stop':
                 stop_dictionary = create_short_instances_dict(
@@ -418,14 +431,7 @@ class AWSRanger(object):
             elif action.lower() == 'terminate':
                 terminate_dictionary = create_short_instances_dict(
                     instances, action.lower())
-                #TODO: need to avoid pulling instance twice
-                stopped_dictionary = create_short_instances_dict(
-                    self.get_instances(config_path, 
-                                       region=region, 
-                                       instances_state="stopped"), 
-                    action.lower())
-                new_dict = dict(terminate_dictionary, **stopped_dictionary)
-                for k, v in new_dict.items():
+                for k, v in terminate_dictionary.items():
                     self.terminate_instnace(v, region=k)
             elif action == 'pass':
                 pass
@@ -433,15 +439,33 @@ class AWSRanger(object):
             pass
 
 class Scheduler(object):
-    def __init__(self, config_path):
-        aws_ranger_config = read_json_file_section(config_path, "_schedule")
-        pass
+    def __init__(self, config_path, state_file):
+        self.config_file = config_path
+        self.state_file = state_file
 
     def start_of_day(self, day):
-        return  datetime.combine(day, time(9, 00))
+        try:
+            start_hour = str(read_json_file_section(
+                self.config_file, "Working Hours")["Start of working Day"])
+            if start_hour.endswith("PM"):
+                start_hour = int(_return_digits(start_hour)) + 12
+            else:
+                start_hour = int(_return_digits(start_hour))
+        except KeyError:
+            start_hour = 9
+        return  datetime.combine(day, time(start_hour, 00))
 
     def end_of_day(self, day):
-        return  datetime.combine(day, time(18, 00))
+        try:
+            end_hour = str(read_json_file_section(
+                self.config_file, "Working Hours")["End of working Day"])
+            if end_hour.endswith("PM"):
+                end_hour = int(_return_digits(end_hour)) + 12
+            else:
+                end_hour = int(_return_digits(end_hour))
+        except KeyError:
+            end_hour = 18
+        return  datetime.combine(day, time(end_hour, 00))
 
     def next_weekday(self):
         workday = date.today() + timedelta(days=1)
@@ -565,14 +589,6 @@ def ranger(ctx, init, region, execute):
     STATE_FILE = '{0}/{1}.state'.format(AWS_RANGER_HOME,
                                         DEFAULT_AWS_PROFILE)
 
-    tags_list = [{"Key":"aws-ranger Host", 
-                  "Value":"{0} @ {1}".format(HOST_NAME, PUBLIC_IP)},
-                 {"Key":"aws-ranger Last Action",
-                  "Value":"{0} @ {1}".format(
-                      execute, Time.strftime("%Y-%m-%d %H:%M:%S"))},
-                 {"Key":"aws-ranger User",
-                  "Value":USER_NAME}]
-
     if init:
         if os.path.exists(AWS_RANGER_HOME):
             print "aws-ranger Home exists, checking config..."
@@ -602,7 +618,7 @@ def ranger(ctx, init, region, execute):
 
     instances = ranger.get_instances(CONFIG_PATH, region=region)
     
-    ranger.executioner(CONFIG_PATH, instances, tags_list, action=execute)
+    ranger.executioner(CONFIG_PATH, instances, action=execute)
     
     if ctx.invoked_subcommand is None and not execute:
         print _format_json(instances)
@@ -652,14 +668,12 @@ def cron(ctx, policy, execute, init, stop):
     if stop:
         _kill_process("aws-ranger")
         _config_cronjob("unset", comment="aws-ranger")
-        _safe_remove(STATE_FILE)
+        # _safe_remove(STATE_FILE)
         sys.exit()
     
     if _find_duplicate_processes("aws-ranger"):
         print "aws-ranger already running! quiting..."
         sys.exit()
-
-    scheduler = Scheduler(config_path=CONFIG_PATH)
 
     if policy not in ['nightly', 'workweek', 'full']:
         print "Policy not Found! Review and select one of three"
@@ -669,6 +683,9 @@ def cron(ctx, policy, execute, init, stop):
         if os.path.isfile(STATE_FILE):
             if _yes_or_no("State file exists, Do you want to overwrite it?"):
                 instances = create_state_file(instances, STATE_FILE)
+                scheduler = Scheduler(config_path=CONFIG_PATH, 
+                                      state_file=STATE_FILE)
+                update_dictionary(STATE_FILE, '_schedule', "init")
                 scheduler.set_schedule_section(policy, STATE_FILE)
                 _config_cronjob("set",
                                 command=CURRENT_FILE,
@@ -679,13 +696,19 @@ def cron(ctx, policy, execute, init, stop):
                 sys.exit()
         else:
             instances = create_state_file(instances, STATE_FILE)
+            scheduler = Scheduler(config_path=CONFIG_PATH, 
+                                  state_file=STATE_FILE)
+
             scheduler.set_schedule_section(policy, STATE_FILE)
             _config_cronjob("set",
                             command=CURRENT_FILE,
                             args=args,
                             comment="aws-ranger")
-
+    
     if os.path.isfile(STATE_FILE) and confirm_state_file(STATE_FILE):
+        scheduler = Scheduler(config_path=CONFIG_PATH, state_file=STATE_FILE)
+
+        scheduler.start_of_day(scheduler.next_weekday())
         scheduler.cron_run(CONFIG_PATH,
                            STATE_FILE,
                            region,
