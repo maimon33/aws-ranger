@@ -3,6 +3,7 @@ import os
 import sys
 import json
 import socket
+import difflib
 import getpass
 import time as Time
 
@@ -101,12 +102,14 @@ def _config_cronjob(action, command=None, args=None, comment=None):
             print "Found no jobs"
 
 def working_hours_converter(target):
-    if target.lower() in ["sunday", "monday", "friday", "thursday"]:
-        return True
-    elif target[0].isdigit() and 0 < int(target[0]) < 13:
-        return True
-    else:
-        return False
+    if target[0].isdigit() and 0 < int(target[0]) < 13:
+        return target
+
+    days = ["Sunday", "Sun", "Monday", "Mon",
+            "Thursday", "Thu", "Friday", "Fri"]
+    for day in days:
+        if difflib.SequenceMatcher(None,a=target.lower(),b=day).ratio() > 0.8:
+            return day
 
 def create_config_file(config_path, profile_name="default"):
     # wryter = Wryte(name='aws-ranger')
@@ -469,22 +472,56 @@ class Scheduler(object):
 
     def next_weekday(self):
         workday = date.today() + timedelta(days=1)
-        while workday.weekday() in [4, 5]:
-            # 4 is Friday and 5 is Saturday
+        weekend = str(read_json_file_section(
+            self.config_file, "Working Hours")["Last Day of the week"])
+        
+        thursday = ["Thursday", "Thu"]
+        for day in thursday:
+            if difflib.SequenceMatcher(None,a=weekend,b=day).ratio() > 0.9:
+                # 4 is Friday and 5 is Saturday
+                weekend = [4, 5]
+            else:
+                # 5 is Saturday and 6 is Sunday
+                weekend = [5, 6]
+            
+        while workday.weekday() in weekend:
             workday = workday + timedelta(days=1)
         else:
             return workday
 
     def end_of_week(self):
         today = datetime.now()
-        while today.weekday() != 3: # 3 for next Thursday
+        last_day = str(read_json_file_section(
+            self.config_file, "Working Hours")["Last Day of the week"])
+        
+        thursday = ["Thursday", "Thu"]
+        for day in thursday:
+            if difflib.SequenceMatcher(None,a=last_day,b=day).ratio() > 0.9:
+                # 3 for Thursday
+                last_day = 3
+            else:
+                # 4 for Friday
+                last_day = 4
+
+        while today.weekday() != last_day:
             today = today + timedelta(days=1)
         end_of_week = self.end_of_day(today)
         return end_of_week
     
     def start_of_next_week(self):
+        first_day = str(read_json_file_section(
+            self.config_file, "Working Hours")["First Day of the Week"])
+        sunday = ["Sunday", "Sun"]
+        for day in sunday:
+            if difflib.SequenceMatcher(None,a=first_day,b=day).ratio() > 0.9:
+                # 6 for Sunday
+                first_day = 6
+            else:
+                # 0 for Monday
+                first_day = 0
+
         next_sunday = self.next_weekday()
-        while next_sunday.weekday() != 6: # 6 for next Sunday
+        while next_sunday.weekday() != first_day:
             next_sunday = next_sunday + timedelta(days=1)
         start_of_week = self.start_of_day(next_sunday)
         return start_of_week
