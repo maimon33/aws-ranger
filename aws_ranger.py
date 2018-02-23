@@ -714,7 +714,7 @@ def cron(ctx, policy, execute, init, stop):
     if stop:
         _kill_process("aws-ranger")
         _config_cronjob("unset", comment="aws-ranger")
-        # _safe_remove(STATE_FILE)
+        _safe_remove(STATE_FILE)
         sys.exit()
     
     if _find_duplicate_processes("aws-ranger"):
@@ -743,6 +743,7 @@ def cron(ctx, policy, execute, init, stop):
                 print "Aborting! you must add schedule section into state file"
                 sys.exit()
         else:
+            print "Creating aws-ranger state file"
             instances = create_state_file(instances, STATE_FILE)
             scheduler = Scheduler(config_path=CONFIG_PATH, 
                                   state_file=STATE_FILE)
