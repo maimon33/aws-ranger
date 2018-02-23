@@ -196,10 +196,14 @@ def send_mail(config_path, subject, msg):
     
 def find_profiles(file):
     profiles_list = []
-    boto_config = open(file).read()
-    for match in re.findall("\[.*\]", boto_config):
-        profiles_list.append(match.strip("[]"))
-    return profiles_list
+    try:
+        boto_config = open(file).read()
+        for match in re.findall("\[.*\]", boto_config):
+            profiles_list.append(match.strip("[]"))
+        return profiles_list
+    except IOError:
+        print "Did not find boto credentials file. returned 'default'"
+        return "default"
         
 def create_short_instances_dict(all_instances_dictionary, execute_action, service=False):
     instance_dict ={}

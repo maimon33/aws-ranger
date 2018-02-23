@@ -17,14 +17,14 @@ You later could run it again but with an action: `stop, start` OR `terminate`
 ## Basic usage
 * get current to default region
 ```
-$ aws-ranger
+$ ranger
 {
     "eu-west-1": {}
 }
 ```
 * get current to all regions
 ```
-$ aws-ranger -r all
+$ ranger -r all
 {
     "ap-northeast-1": {}, 
     "ap-northeast-2": {}, 
@@ -69,7 +69,7 @@ $ aws-ranger -r all
 ```
 * terminate instances without protected tags
 ```
-$ aws-ranger -x terminate
+$ ranger -x terminate
 Terminating instance: i-0c08a1631d92268e4
 Terminating instance: i-0da0f947e9dc1cac8
 Terminating instance: i-054c4adfb5d06e3de
@@ -81,12 +81,12 @@ Terminating instance: i-0c54eaa6746f91b63
 To Set the cronjob to run aws-ranger every minute simply run the init command. This command relies on aws-ranger being initiated first
 * Start aws-ranger cron
 ```
-$ aws-ranger cron --init
+$ ranger cron --init
 Creating aws-ranger state file
 ```
 
 * Stop aws-ranger cron
 ```
-$ aws-ranger cron -s
+$ ranger cron -s
 Removing aws-ranger job
 ```
