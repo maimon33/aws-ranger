@@ -1,18 +1,21 @@
-## aws-ranger
-
-**WIP**<br>
-Some features are not fully operational yet
+## ranger
 
 The tool to help you get a handle on your AWS account.
 
-To start using just type: `aws-ranger --init`.<br>
-This will prompt for your AWS creds and account alias of your choice and map your entire account.
 
-You later could run it again but with an action: `stop, start` OR `terminate`
+Before using ranger, you'll need to configure boto3 or have run from an
+ instance with the proper IAM role.<br>
+You have several options for that: [boto3 Docs](http://boto3.readthedocs.io/en/latest/guide/configuration.html)
+
+Once boto3 is configured, Start using ranger by initializing it.
+Type: `ranger --init`.<br>
+
+You later could run it again but with an action: `stop, start` OR `terminate`<br>
+Use the `-x` flag
 
 
 ## Install
-`pip install https://github.com/maimon33/aws-ranger/archive/master.zip`
+`pip install https://github.com/maimon33/ranger/archive/master.zip`
 
 ## Basic usage
 * get current to default region
@@ -78,15 +81,29 @@ Terminating instance: i-0c54eaa6746f91b63
 
 ## Cron mode
 
-To Set the cronjob to run aws-ranger every minute simply run the init command. This command relies on aws-ranger being initiated first
-* Start aws-ranger cron
+To Set the cronjob to run ranger every minute simply run the init command `ranger cron --init`<br> 
+_This command relies on ranger being initiated first_<br>
+
+As before you have the option of stopping or terminating instances controlled by ranger.<br>
+
+**In the cron mode you'll need to set the policy too**<br>
+The policy will determine when and ranger action will be executed automatically.
+* **Nightly**: Stops or Terminates instances at the end of the day
+* **Workweek**: Stops or Terminates instances just before the weekend
+* **Full**: Stops instances Nightly and Starts them up at the start of the next weekday
+
+Use `-p` flag and Specify the policy you'd like to enforce and
+ `-x` for the action to be executed<br>
+**Default action  and policy for the cron mode is "Stop" and "Nightly"**
+
+* Start ranger cron
 ```
 $ ranger cron --init
-Creating aws-ranger state file
+Creating ranger state file
 ```
 
 * Stop aws-ranger cron
 ```
 $ ranger cron -s
-Removing aws-ranger job
+Removing ranger job
 ```

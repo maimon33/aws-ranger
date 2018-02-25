@@ -101,6 +101,18 @@ def _config_cronjob(action, command=None, args=None, comment=None):
         else:
             print "Found no jobs"
 
+def find_profiles(file=None):
+    if not file:
+        file = ""
+    profiles_list = []
+    try:
+        boto_config = open(file).read()
+        for match in re.findall("\[.*\]", boto_config):
+            profiles_list.append(match.strip("[]"))
+        return profiles_list
+    except IOError:
+        return ["default"]
+
 def validate_ranger(ranger_home, config_path):
     if not os.path.exists(ranger_home):
         print ' Missing aws-ranger HOME dir...\n Run:\n'\
@@ -122,7 +134,7 @@ def working_hours_converter(target):
         if difflib.SequenceMatcher(None,a=target.lower(),b=day).ratio() > 0.8:
             return day
 
-def create_config_file(config_path, profile_name="default"):
+def create_config_file(config_path, profile_name):
     # wryter = Wryte(name='aws-ranger')
     aws_ranger_config = {}
     email_dictionary = {}
@@ -177,8 +189,7 @@ def create_config_file(config_path, profile_name="default"):
         json.dump(aws_ranger_config, file, indent=4)
 
 def read_json_file_section(config_path, 
-                           requested_data, 
-                           profile_name="default"):
+                           requested_data):
     ranger_config = json.load(open(config_path))
     return ranger_config[requested_data]
 
@@ -193,17 +204,6 @@ def send_mail(config_path, subject, msg):
                     email_config["DESTINATION_EMAIL"],
                     'Subject: {}\n\n{}'.format(subject, msg))
     server.quit()
-    
-def find_profiles(file):
-    profiles_list = []
-    try:
-        boto_config = open(file).read()
-        for match in re.findall("\[.*\]", boto_config):
-            profiles_list.append(match.strip("[]"))
-        return profiles_list
-    except IOError:
-        print "Did not find boto credentials file. returned 'default'"
-        return "default"
         
 def create_short_instances_dict(all_instances_dictionary, execute_action, service=False):
     instance_dict ={}
@@ -316,19 +316,22 @@ class AWSRanger(object):
     def __init__(self, profile_name):
         try:
             self.aws_client(resource=False, 
-                            profile_name=profile_name).describe_regions()
+                            profile_name=None).describe_regions()
         except ClientError as e:
             print('Failed to Authenticate your AWS account\n'
             'Review your boto credentials file at ~/.aws/credentials')
             sys.exit()
 
     def aws_client(self, 
-                   resource=True, 
-                   profile_name='default',
-                   region_name='eu-west-1', 
-                   aws_service='ec2'):
+                   resource=True,
+                   profile_name=None,
+                   region_name="eu-west-1",
+                   aws_service="ec2"):
         
-        session = boto3.Session(profile_name=profile_name)
+        if not profile_name:
+            session = boto3.Session()
+        else:
+            session = boto3.Session(profile_name=profile_name)
 
         if resource:
             return session.resource(aws_service, region_name=region_name)
@@ -579,6 +582,7 @@ class Scheduler(object):
             return True
 
     def cron_run(self, 
+                 profile_name,
                  config_path, 
                  state_file, 
                  region, 
@@ -592,7 +596,7 @@ class Scheduler(object):
         schedule_info = self.set_schedule_section(policy, state_file)
 
         # Once cron is configured, This section will execute each run
-        ranger = AWSRanger(profile_name="default")
+        ranger = AWSRanger(profile_name=profile_name)
         instances = ranger.get_instances(config_path, region=region)
         update_dictionary(state_file, '_schedule', schedule_info)
         update_json_file(state_file, instances)
@@ -661,7 +665,7 @@ def ranger(ctx, init, region, execute):
     
     validate_ranger(AWS_RANGER_HOME, CONFIG_PATH)
     
-    ranger = AWSRanger(profile_name='default')
+    ranger = AWSRanger(profile_name=DEFAULT_AWS_PROFILE)
 
     if region == "all":
         region = None
@@ -674,7 +678,7 @@ def ranger(ctx, init, region, execute):
         print _format_json(instances)
         sys.exit()
 
-    ctx.obj = [CONFIG_PATH, STATE_FILE, instances, region]
+    ctx.obj = [DEFAULT_AWS_PROFILE, CONFIG_PATH, STATE_FILE, instances, region]
 
 @ranger.command('cron')
 @click.pass_obj
@@ -708,10 +712,11 @@ def cron(ctx, policy, execute, init, stop):
     Set the Execution that aws-ranger will enforce [stop, terminate, alert]\n
     You can limit aws-ranger control to one region.\n
     """
-    CONFIG_PATH = ctx[0]
-    STATE_FILE = ctx[1]
-    instances = ctx[2]
-    region = ctx[3]
+    DEFAULT_AWS_PROFILE = ctx[0]
+    CONFIG_PATH = ctx[1]
+    STATE_FILE = ctx[2]
+    instances = ctx[3]
+    region = ctx[4]
 
     args = '-r {0} {1} -p {2} -x {3}'.format(region, "cron", policy, execute)
     
@@ -728,7 +733,10 @@ def cron(ctx, policy, execute, init, stop):
     if policy not in ['nightly', 'workweek', 'full']:
         print "Policy not Found! Review and select one of three"
         sys.exit()
-    
+
+    if policy.lower() == "full":
+        execute = "stop"
+
     validate_ranger(AWS_RANGER_HOME, CONFIG_PATH)
     
     if init:
@@ -762,7 +770,8 @@ def cron(ctx, policy, execute, init, stop):
         scheduler = Scheduler(config_path=CONFIG_PATH, state_file=STATE_FILE)
 
         scheduler.start_of_day(scheduler.next_weekday())
-        scheduler.cron_run(CONFIG_PATH,
+        scheduler.cron_run(DEFAULT_AWS_PROFILE,
+                           CONFIG_PATH,
                            STATE_FILE,
                            region,
                            policy,
