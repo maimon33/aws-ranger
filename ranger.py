@@ -21,10 +21,15 @@ from wryte import Wryte
 from botocore.exceptions import ClientError
 
 CURRENT_FILE = sys.argv[0]
-USER_NAME = getpass.getuser()
+USERNAME = getpass.getuser()
 USER_HOME = os.getenv("HOME")
-HOST_NAME = socket.gethostname()
-PUBLIC_IP = json.load(urllib2.urlopen('http://jsonip.com'))['ip']
+HOSTNAME = socket.gethostname()
+
+try:
+    urllib2.urlopen('http://www.google.com', timeout=1)
+    PUBLIC_IP = json.load(urllib2.urlopen('http://jsonip.com'))['ip']
+except urllib2.URLError:
+    PUBLIC_IP = ""
 
 AWS_RANGER_HOME = '{0}/.aws-ranger'.format(USER_HOME)
 BOTO_CREDENTIALS = '{0}/.aws/credentials'.format(USER_HOME)
@@ -36,7 +41,7 @@ def _internet_on():
     try:
         urllib2.urlopen('http://www.google.com', timeout=1)
         return True
-    except urllib2.URLError as err: 
+    except urllib2.URLError as err:
         return False
     except socket.timeout, e:
         return False
@@ -213,6 +218,7 @@ def create_short_instances_dict(all_instances_dictionary, execute_action, servic
         stopped_instances_ids = []
         running_instances_ids = []
         managed_instances_ids = []
+        
         try:
             if region[1] in ["running", "stopped", "exclude", "managed"]:
                 pass
@@ -230,14 +236,16 @@ def create_short_instances_dict(all_instances_dictionary, execute_action, servic
 
             if state == "stopped":
                 for instance in region[1][state]:
+                    print instance
                     stopped_instances_ids.append(instance["_ID"])
 
         if service:
             instance_dict[region[0]] = managed_instances_ids
         else:
             if execute_action == "start":
-                # instances_ids_list 
-                pass
+                instances_ids_list = managed_instances_ids + \
+                                     stopped_instances_ids
+                instance_dict[region[0]] = instances_ids_list
             if execute_action == "stop":
                 instances_ids_list = managed_instances_ids + \
                                      running_instances_ids
@@ -250,8 +258,9 @@ def create_short_instances_dict(all_instances_dictionary, execute_action, servic
 
     return instance_dict
 
-def create_state_file(dictionary, state_file):
+def create_state_dictionary(dictionary):
     state_file_dictionary = {}
+
     for region in dictionary.items():
         excluded_instance_list = []
         running_instance_list = []
@@ -262,24 +271,27 @@ def create_state_file(dictionary, state_file):
         for state in region[1]:
             if state == "exclude":
                 for instance in region[1]['exclude']:
-                    managed_instance_list.append(instance)
+                    excluded_instance_list.append(instance)
                     region_inventory["exclude"] = excluded_instance_list
-            elif state == "running":
+            
+            if state == "running":
                 for instance in region[1]['running']:
                     managed_instance_list.append(instance)
                     running_instance_list.append(instance)
                     region_inventory["managed"] = managed_instance_list
                     region_inventory["running"] = running_instance_list
-            elif state == "stopped":
+            
+            if state == "stopped":
                 for instance in region[1]['stopped']:
-                    managed_instance_list.append(instance)
+                    stopped_instance_list.append(instance)
                     region_inventory["stopped"] = stopped_instance_list
+        
         if len(region[1]) == 0:
             region_inventory["State"] = "Non Active"
+        
         state_file_dictionary[region[0]] = region_inventory
 
-    with open(state_file, 'w') as file:
-        json.dump(state_file_dictionary, file, indent=4, sort_keys=True)
+    return state_file_dictionary
 
 def confirm_state_file(file_path):
     try:
@@ -301,10 +313,68 @@ def read_json_file(json_file):
     return json.load(open(json_file))
 
 def update_json_file(file_path, new_dictionary):
-    orig_state_file = json.load(open(file_path))
+    try:
+        orig_state_file = json.load(open(file_path))
+    except IOError:
+        orig_state_file = {}
+    except ValueError:
+        orig_state_file = {}
     orig_state_file.update(new_dictionary)
     with open(file_path, 'w') as file:
         json.dump(orig_state_file, file, indent=4, sort_keys=True)
+
+def update_instances_state_file(all_instances_dictionary, state_file):
+    instance_dict ={}
+
+    update_json_file(state_file, all_instances_dictionary)
+
+    for region in all_instances_dictionary.items():
+     
+        print region
+        
+        try:
+            if region[1] in ["running", "stopped", "exclude", "managed"]:
+                print "Found"
+                pass
+        except KeyError:
+            print "Bad"
+            region[1]["Region State"] = "Region vacent"
+        
+        for state in region[1]:
+            # print state
+            for instance in state:
+                pass
+            # if state == "managed":
+            #     for instance in region[1][state]:
+            #         managed_instances_ids.append(instance["_ID"])
+            
+            # if state == "running":
+            #     for instance in region[1][state]:
+            #         running_instances_ids.append(instance["_ID"])
+
+            # if state == "stopped":
+            #     for instance in region[1][state]:
+            #         print instance
+            #         stopped_instances_ids.append(instance["_ID"])
+
+        # if service:
+        #     instance_dict[region[0]] = managed_instances_ids
+        # else:
+        #     if execute_action == "start":
+        #         instances_ids_list = managed_instances_ids + \
+        #                              stopped_instances_ids
+        #         instance_dict[region[0]] = instances_ids_list
+        #     if execute_action == "stop":
+        #         instances_ids_list = managed_instances_ids + \
+        #                              running_instances_ids
+        #         instance_dict[region[0]] = instances_ids_list
+        #     if execute_action == "terminate":
+        #         instances_ids_list  = managed_instances_ids + \
+        #                               running_instances_ids + \
+        #                               stopped_instances_ids
+        #         instance_dict[region[0]] = instances_ids_list
+
+    return instance_dict
 
 def update_dictionary(file_path, section, keys_and_values):
     state_file = json.load(open(file_path))
@@ -430,12 +500,12 @@ class AWSRanger(object):
                     action="pass"):
         
         tags_list = [{"Key":"aws-ranger Host", 
-                      "Value":"{0} @ {1}".format(HOST_NAME, PUBLIC_IP)},
+                      "Value":"{0} @ {1}".format(HOSTNAME, PUBLIC_IP)},
                       {"Key":"aws-ranger Last Action",
                       "Value":"{0} @ {1}".format(
                           action, Time.strftime("%Y-%m-%d %H:%M:%S"))},
                       {"Key":"aws-ranger User",
-                      "Value":USER_NAME}]
+                      "Value":USERNAME}]
         try:
             if action.lower() == 'stop':
                 stop_dictionary = create_short_instances_dict(
@@ -446,6 +516,7 @@ class AWSRanger(object):
             elif action.lower() == 'start':
                 start_dictionary = create_short_instances_dict(
                     instances, action.lower())
+                print start_dictionary
                 for k, v in start_dictionary.items():
                     self.start_instnace(v, region=k)
                     self.update_tags(v, tags_list, region=k)
@@ -505,6 +576,7 @@ class Scheduler(object):
         while workday.weekday() in weekend:
             workday = workday + timedelta(days=1)
         else:
+            print workday
             return workday
 
     def end_of_week(self):
@@ -524,11 +596,13 @@ class Scheduler(object):
         while today.weekday() != last_day:
             today = today + timedelta(days=1)
         end_of_week = self.end_of_day(today)
+        print end_of_week
         return end_of_week
     
     def start_of_next_week(self):
         first_day = str(read_json_file_section(
             self.config_file, "Working Hours")["First Day of the Week"])
+        print first_day
         sunday = ["Sunday", "Sun"]
         for day in sunday:
             if difflib.SequenceMatcher(None,a=first_day,b=day).ratio() > 0.9:
@@ -567,6 +641,8 @@ class Scheduler(object):
                 return ['stop', take_five]
             elif now < self.end_of_week():
                 return ['stop', self.end_of_week()]
+            else:
+                return ['stop', self.end_of_week()]
 
     def set_schedule_section(self, policy, state_file):
         next_task = self.get_next_action(policy)
@@ -578,7 +654,7 @@ class Scheduler(object):
     
     def compare_times(self, target_time):
         target_convert = datetime.strptime(target_time, '%Y-%m-%d %H:%M:%S')
-        if target_convert > datetime.now():
+        if target_convert < datetime.now():
             return True
 
     def cron_run(self, 
@@ -594,13 +670,33 @@ class Scheduler(object):
             sys.exit()
 
         schedule_info = self.set_schedule_section(policy, state_file)
+        update_dictionary(state_file, '_schedule', schedule_info)
 
         # Once cron is configured, This section will execute each run
         ranger = AWSRanger(profile_name=profile_name)
-        instances = ranger.get_instances(config_path, region=region)
-        update_dictionary(state_file, '_schedule', schedule_info)
-        update_json_file(state_file, instances)
+        if os.path.isfile(state_file):
+            update_json_file(state_file, create_state_dictionary(instances))
+        else:
+            instances = ranger.get_instances(config_path, region=region)
+            update_json_file(state_file, create_state_dictionary(instances))
+        
+        #TODO: update state file, do not overwrite existing instances
+        # state = create_state_dictionary(instances)
+        # z = dict(state, **instances)
+        # print instances
+        # print "8"*50
+        # print state
+        # print "8"*50
+        # print z
+        # instances = read_json_file(state_file)
+        # update_instances_state_file(instances)
+        # update_json_file(state_file, instances)
+        # create_short_instances_dict(instances, execute, service=True)
         next_run = read_json_file_section(state_file, "_schedule")
+        if next_run["Next Task"] == "start":
+            ranger.executioner(config_path, 
+                               instances, 
+                               action="stop")
         if self.compare_times(next_run["Time"]):
             ranger.executioner(config_path, 
                                instances, 
@@ -672,7 +768,10 @@ def ranger(ctx, init, region, execute):
 
     instances = ranger.get_instances(CONFIG_PATH, region=region)
     
-    ranger.executioner(CONFIG_PATH, instances, action=execute)
+    if ctx.invoked_subcommand:
+        pass
+    else:
+        ranger.executioner(CONFIG_PATH, instances, action=execute)
     
     if ctx.invoked_subcommand is None and not execute:
         print _format_json(instances)
@@ -742,7 +841,8 @@ def cron(ctx, policy, execute, init, stop):
     if init:
         if os.path.isfile(STATE_FILE):
             if _yes_or_no("State file exists, Do you want to overwrite it?"):
-                instances = create_state_file(instances, STATE_FILE)
+                _safe_remove(STATE_FILE)
+                update_json_file(STATE_FILE, create_state_dictionary(instances))
                 scheduler = Scheduler(config_path=CONFIG_PATH, 
                                       state_file=STATE_FILE)
                 update_dictionary(STATE_FILE, '_schedule', "init")
@@ -756,7 +856,7 @@ def cron(ctx, policy, execute, init, stop):
                 sys.exit()
         else:
             print "Creating aws-ranger state file"
-            instances = create_state_file(instances, STATE_FILE)
+            update_json_file(STATE_FILE, create_state_dictionary(instances))
             scheduler = Scheduler(config_path=CONFIG_PATH, 
                                   state_file=STATE_FILE)
 
@@ -769,7 +869,6 @@ def cron(ctx, policy, execute, init, stop):
     if os.path.isfile(STATE_FILE) and confirm_state_file(STATE_FILE):
         scheduler = Scheduler(config_path=CONFIG_PATH, state_file=STATE_FILE)
 
-        scheduler.start_of_day(scheduler.next_weekday())
         scheduler.cron_run(DEFAULT_AWS_PROFILE,
                            CONFIG_PATH,
                            STATE_FILE,
