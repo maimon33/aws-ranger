@@ -31,7 +31,7 @@ try:
 except urllib2.URLError:
     PUBLIC_IP = ""
 
-AWS_RANGER_HOME = '{0}/.aws-ranger'.format(USER_HOME)
+AWS_RANGER_HOME = '{0}/.ranger'.format(USER_HOME)
 BOTO_CREDENTIALS = '{0}/.aws/credentials'.format(USER_HOME)
 
 def _format_json(dictionary):
@@ -41,9 +41,7 @@ def _internet_on():
     try:
         urllib2.urlopen('http://www.google.com', timeout=1)
         return True
-    except urllib2.URLError as err:
-        return False
-    except socket.timeout, e:
+    except (urllib2.URLError, socket.timeout):
         return False
 
 def _return_digits(string_input):
@@ -100,7 +98,7 @@ def _config_cronjob(action, command=None, args=None, comment=None):
     elif action == "unset":
         if _find_cron(my_crontab, comment):
             for job in my_crontab:
-                print "Removing aws-ranger job"
+                print "Removing ranger job"
                 my_crontab.remove(job)
                 my_crontab.write()
         else:
@@ -120,13 +118,13 @@ def find_profiles(file=None):
 
 def validate_ranger(ranger_home, config_path):
     if not os.path.exists(ranger_home):
-        print ' Missing aws-ranger HOME dir...\n Run:\n'\
-              ' aws-ranger --init or create it yourself at ~/.aws-ranger'
+        print ' Missing ranger HOME dir...\n Run:\n'\
+              ' ranger --init or create it yourself at ~/.ranger'
         sys.exit()
     
     if not os.path.exists(config_path):
-        print ' Missing aws-ranger config...\n Run:\n'\
-              ' aws-ranger --init '
+        print ' Missing ranger config...\n Run:\n'\
+              ' ranger --init '
         sys.exit()
 
 def working_hours_converter(target):
@@ -140,7 +138,7 @@ def working_hours_converter(target):
             return day
 
 def create_config_file(config_path, profile_name):
-    # wryter = Wryte(name='aws-ranger')
+    # wryter = Wryte(name='ranger')
     aws_ranger_config = {}
     email_dictionary = {}
     
@@ -149,7 +147,7 @@ def create_config_file(config_path, profile_name):
     # Tags
     default_exclude_tags = ["prod", "production", "free range"]
     tags_text = '\nPlease enter tag values to exclude them '\
-            'from aws-ranger (use comma to separate items) '\
+            'from ranger (use comma to separate items) '\
             '\nDefaults = [prod, production, free range]: '
     exclude_tags = raw_input(tags_text).split(",")
     if len(exclude_tags) == 0:
@@ -193,8 +191,7 @@ def create_config_file(config_path, profile_name):
     with open(config_path, 'w') as file:
         json.dump(aws_ranger_config, file, indent=4)
 
-def read_json_file_section(config_path, 
-                           requested_data):
+def read_json_file_section(config_path, requested_data):
     ranger_config = json.load(open(config_path))
     return ranger_config[requested_data]
 
@@ -210,7 +207,9 @@ def send_mail(config_path, subject, msg):
                     'Subject: {}\n\n{}'.format(subject, msg))
     server.quit()
         
-def create_short_instances_dict(all_instances_dictionary, execute_action, service=False):
+def create_short_instances_dict(all_instances_dictionary, 
+                                execute_action, 
+                                service=False):
     instance_dict ={}
 
     for region in all_instances_dictionary.items():
@@ -219,25 +218,20 @@ def create_short_instances_dict(all_instances_dictionary, execute_action, servic
         running_instances_ids = []
         managed_instances_ids = []
         
-        try:
-            if region[1] in ["running", "stopped", "exclude", "managed"]:
-                pass
-        except KeyError:
-            region[1]["Region State"] = "Region vacent"
-        
-        for state in region[1]:
-            if state == "managed":
-                for instance in region[1][state]:
-                    managed_instances_ids.append(instance["_ID"])
-            
-            if state == "running":
-                for instance in region[1][state]:
-                    running_instances_ids.append(instance["_ID"])
+        for instance in region[1]:
+            if instance['ranger state'] == "excluded":
+                continue
 
-            if state == "stopped":
-                for instance in region[1][state]:
-                    print instance
-                    stopped_instances_ids.append(instance["_ID"])
+            if instance['ranger state'] == "managed":
+                managed_instances_ids.append(instance["_ID"])
+            
+            if instance['State'] == "running" and \
+                instance['ranger state'] != "managed":
+                running_instances_ids.append(instance["_ID"])
+
+            if instance['State'] == "stopped" and \
+                instance['ranger state'] != "managed":
+                stopped_instances_ids.append(instance["_ID"])
 
         if service:
             instance_dict[region[0]] = managed_instances_ids
@@ -254,7 +248,7 @@ def create_short_instances_dict(all_instances_dictionary, execute_action, servic
                 instances_ids_list  = managed_instances_ids + \
                                       running_instances_ids + \
                                       stopped_instances_ids
-                instance_dict[region[0]] = instances_ids_list
+            instance_dict[region[0]] = instances_ids_list
 
     return instance_dict
 
@@ -262,35 +256,19 @@ def create_state_dictionary(dictionary):
     state_file_dictionary = {}
 
     for region in dictionary.items():
-        excluded_instance_list = []
-        running_instance_list = []
-        stopped_instance_list = []
-        managed_instance_list = []
-        region_inventory = {}
+        region_instances = []
 
-        for state in region[1]:
-            if state == "exclude":
-                for instance in region[1]['exclude']:
-                    excluded_instance_list.append(instance)
-                    region_inventory["exclude"] = excluded_instance_list
-            
-            if state == "running":
-                for instance in region[1]['running']:
-                    managed_instance_list.append(instance)
-                    running_instance_list.append(instance)
-                    region_inventory["managed"] = managed_instance_list
-                    region_inventory["running"] = running_instance_list
-            
-            if state == "stopped":
-                for instance in region[1]['stopped']:
-                    stopped_instance_list.append(instance)
-                    region_inventory["stopped"] = stopped_instance_list
-        
-        if len(region[1]) == 0:
-            region_inventory["State"] = "Non Active"
-        
-        state_file_dictionary[region[0]] = region_inventory
-
+        for instance in region[1]:
+            if instance['ranger state'] == "excluded":
+                region_instances.append(instance)
+            elif instance['State'] == "running":
+                instance['ranger state'] = "managed"
+                region_instances.append(instance)
+            elif instance['State'] == "stopped" and \
+                instance['ranger state'] != "managed":
+                instance['ranger state'] = "ignored"
+                region_instances.append(instance)
+        state_file_dictionary[region[0]] = region_instances
     return state_file_dictionary
 
 def confirm_state_file(file_path):
@@ -299,8 +277,7 @@ def confirm_state_file(file_path):
         schedule = state_file['_schedule']
         return True
     except ValueError:
-        print ' State file corrupted. Create new by using --init\n '\
-              ' sudo aws-ranger daemon --init '
+        print ' State file corrupted. Create new by using --init\n '
         sys.exit()
     except KeyError:
         print "Missing schedule config. Run again with --init flag"
@@ -315,69 +292,56 @@ def read_json_file(json_file):
 def update_json_file(file_path, new_dictionary):
     try:
         orig_state_file = json.load(open(file_path))
-    except IOError:
-        orig_state_file = {}
-    except ValueError:
+    except (IOError, ValueError):
         orig_state_file = {}
     orig_state_file.update(new_dictionary)
     with open(file_path, 'w') as file:
         json.dump(orig_state_file, file, indent=4, sort_keys=True)
 
-def update_instances_state_file(all_instances_dictionary, state_file):
-    instance_dict ={}
+def update_instances_state_file(state_file, all_instances_dictionary):
+    new_state_dict = {}
+    instances_list = []
+    current_instances_ids = []
+    state_file_instances_ids = []
 
-    update_json_file(state_file, all_instances_dictionary)
+    state_dict = read_json_file(state_file)
+    instances = create_state_dictionary(all_instances_dictionary)
 
-    for region in all_instances_dictionary.items():
-     
-        print region
-        
-        try:
-            if region[1] in ["running", "stopped", "exclude", "managed"]:
-                print "Found"
+    # Remove Schedule section for state evaluation
+    state_dict.pop('_schedule', None)
+
+    
+    for region, state_instances_list in state_dict.items():
+        for state_instance in state_instances_list:
+            try:
+                state_file_instances_ids.append(state_instance["_ID"])
+            except TypeError:
                 pass
-        except KeyError:
-            print "Bad"
-            region[1]["Region State"] = "Region vacent"
-        
-        for state in region[1]:
-            # print state
-            for instance in state:
-                pass
-            # if state == "managed":
-            #     for instance in region[1][state]:
-            #         managed_instances_ids.append(instance["_ID"])
-            
-            # if state == "running":
-            #     for instance in region[1][state]:
-            #         running_instances_ids.append(instance["_ID"])
 
-            # if state == "stopped":
-            #     for instance in region[1][state]:
-            #         print instance
-            #         stopped_instances_ids.append(instance["_ID"])
-
-        # if service:
-        #     instance_dict[region[0]] = managed_instances_ids
-        # else:
-        #     if execute_action == "start":
-        #         instances_ids_list = managed_instances_ids + \
-        #                              stopped_instances_ids
-        #         instance_dict[region[0]] = instances_ids_list
-        #     if execute_action == "stop":
-        #         instances_ids_list = managed_instances_ids + \
-        #                              running_instances_ids
-        #         instance_dict[region[0]] = instances_ids_list
-        #     if execute_action == "terminate":
-        #         instances_ids_list  = managed_instances_ids + \
-        #                               running_instances_ids + \
-        #                               stopped_instances_ids
-        #         instance_dict[region[0]] = instances_ids_list
-
-    return instance_dict
+    for region, current_instances_list in instances.items():
+        for instance in current_instances_list:
+            if instance["_ID"] in state_file_instances_ids:
+                for state_instance in state_instances_list:
+                    if state_instance["_ID"] == instance["_ID"]:
+                        instances_list.append(state_instance)
+            else:
+                if instance['ranger state'] == "excluded":
+                    instances_list.append(instance)
+                elif instance["State"] == "running":
+                    instance['ranger state'] == "managed"
+                    instances_list.append(instance)
+                elif instance["State"] == "stopped":
+                    instance['ranger state'] == "ignored"
+                    instances_list.append(instance)
+        new_state_dict[region] = instances_list
+        update_dictionary(state_file, region, new_state_dict[region])
 
 def update_dictionary(file_path, section, keys_and_values):
-    state_file = json.load(open(file_path))
+    try:
+        state_file = json.load(open(file_path))
+    except ValueError:
+        print "Corrupted json file"
+        sys.exit()
     state_file[section] = keys_and_values
     with open(file_path, 'w') as file:
         json.dump(state_file, file, indent=4, sort_keys=True)
@@ -438,9 +402,7 @@ class AWSRanger(object):
         all_instances = {}
 
         for region in region_list:
-            excluded_instance_list = []
-            running_instance_list = []
-            stopped_instance_list = []
+            instances_list = []
             region_inventory = {}
             
             instances = self.fetch_instances(region)
@@ -451,23 +413,20 @@ class AWSRanger(object):
                 instance_dict['Type'] = instance.instance_type
                 instance_dict['Public DNS'] = instance.public_dns_name
                 instance_dict['Creation Date'] = str(instance.launch_time)
+                instance_dict['ranger state'] = "new"
                 instance_dict['Tags'] = instance.tags
+                
                 try:
                     if instance.tags[0]['Value'].lower() in \
                     read_json_file_section(config_path, "EXCLUDE_TAGS"):
-                        excluded_instance_list.append(instance_dict)
-                        region_inventory['exclude'] = excluded_instance_list
+                        instance_dict['ranger state'] = "excluded"
+                        instances_list.append(instance_dict)
                         continue
                 except TypeError:
                     instance_dict['Tags'] = [{u'Value': 'none', u'Key': 'Tag'}]
 
-                if instance.state['Name'] == 'stopped':
-                    stopped_instance_list.append(instance_dict)
-                    region_inventory['stopped'] = stopped_instance_list
-                elif instance.state['Name'] == 'running':
-                    running_instance_list.append(instance_dict)
-                    region_inventory['running'] = running_instance_list
-            all_instances[region] = region_inventory
+                instances_list.append(instance_dict)
+            all_instances[region] = instances_list
         return all_instances
 
     def update_tags(self, instance_list, tags_list, region):
@@ -499,12 +458,12 @@ class AWSRanger(object):
                     region=False,
                     action="pass"):
         
-        tags_list = [{"Key":"aws-ranger Host", 
+        tags_list = [{"Key":"ranger Host", 
                       "Value":"{0} @ {1}".format(HOSTNAME, PUBLIC_IP)},
-                      {"Key":"aws-ranger Last Action",
+                     {"Key":"ranger Last Action",
                       "Value":"{0} @ {1}".format(
                           action, Time.strftime("%Y-%m-%d %H:%M:%S"))},
-                      {"Key":"aws-ranger User",
+                     {"Key":"ranger User",
                       "Value":USERNAME}]
         try:
             if action.lower() == 'stop':
@@ -576,7 +535,6 @@ class Scheduler(object):
         while workday.weekday() in weekend:
             workday = workday + timedelta(days=1)
         else:
-            print workday
             return workday
 
     def end_of_week(self):
@@ -596,13 +554,11 @@ class Scheduler(object):
         while today.weekday() != last_day:
             today = today + timedelta(days=1)
         end_of_week = self.end_of_day(today)
-        print end_of_week
         return end_of_week
     
     def start_of_next_week(self):
         first_day = str(read_json_file_section(
             self.config_file, "Working Hours")["First Day of the Week"])
-        print first_day
         sunday = ["Sunday", "Sun"]
         for day in sunday:
             if difflib.SequenceMatcher(None,a=first_day,b=day).ratio() > 0.9:
@@ -666,32 +622,20 @@ class Scheduler(object):
                  execute, 
                  instances):
         
-        if _find_duplicate_processes("aws-ranger"):
+        if _find_duplicate_processes("ranger"):
             sys.exit()
 
         schedule_info = self.set_schedule_section(policy, state_file)
         update_dictionary(state_file, '_schedule', schedule_info)
 
         # Once cron is configured, This section will execute each run
-        ranger = AWSRanger(profile_name=profile_name)
         if os.path.isfile(state_file):
-            update_json_file(state_file, create_state_dictionary(instances))
+            update_instances_state_file(state_file, instances)
         else:
-            instances = ranger.get_instances(config_path, region=region)
             update_json_file(state_file, create_state_dictionary(instances))
-        
-        #TODO: update state file, do not overwrite existing instances
-        # state = create_state_dictionary(instances)
-        # z = dict(state, **instances)
-        # print instances
-        # print "8"*50
-        # print state
-        # print "8"*50
-        # print z
-        # instances = read_json_file(state_file)
-        # update_instances_state_file(instances)
-        # update_json_file(state_file, instances)
-        # create_short_instances_dict(instances, execute, service=True)
+
+        instances = read_json_file(state_file)
+
         next_run = read_json_file_section(state_file, "_schedule")
         if next_run["Next Task"] == "start":
             ranger.executioner(config_path, 
@@ -702,7 +646,7 @@ class Scheduler(object):
                                instances, 
                                action=next_run["Next Task"])
         else:
-            pass
+            sys.exit()
 
 
 CLICK_CONTEXT_SETTINGS = dict(
@@ -715,7 +659,7 @@ CLICK_CONTEXT_SETTINGS = dict(
 @click.pass_context
 @click.option('--init',
               is_flag=True,
-              help="Config aws-ranger for first use")
+              help="Config ranger for first use")
 @click.option('-r',
               '--region',
               default="eu-west-1",
@@ -743,18 +687,17 @@ def ranger(ctx, init, region, execute):
 
     if init:
         if os.path.exists(AWS_RANGER_HOME):
-            print "aws-ranger Home exists, checking config..."
+            print "ranger Home exists, checking config..."
             if os.path.exists(CONFIG_PATH):
-                print "Hi"
-                if _yes_or_no(' aws-ranger was already initiated, '\
+                if _yes_or_no(' ranger was already initiated, '\
                               ' Overwrite config? '):
                     _safe_remove(CONFIG_PATH)
                     create_config_file(CONFIG_PATH, DEFAULT_AWS_PROFILE)
             else:
-                print "Creating aws-ranger config file"
+                print "Creating ranger config file"
                 create_config_file(CONFIG_PATH, DEFAULT_AWS_PROFILE)
         else:
-            if _yes_or_no(' You are about to create Home dir for aws-ranger.\n '
+            if _yes_or_no(' You are about to create Home dir for ranger.\n '
                           ' Continue? '):
                 os.makedirs(AWS_RANGER_HOME)
                 create_config_file(CONFIG_PATH, DEFAULT_AWS_PROFILE)
@@ -798,18 +741,18 @@ def ranger(ctx, init, region, execute):
 @click.option('-s',
               '--stop',
               is_flag=True,
-              help='Remove aws-ranger from cron')
+              help='Remove ranger from cron')
 def cron(ctx, policy, execute, init, stop):
-    """Run aws-ranger as a cron job.\n
+    """Run ranger as a cron job.\n
     
     \b 
-    Control aws-ranger by setting the policy,
+    Control ranger by setting the policy,
     [nightly]: Executes (stop\ terminate) on Instances every end of day
     [workweek]: Executes (stop\ terminate) on Instances just before the weekend
     [full]: Executes (stop\ start) on Instances Daily and over the weekend
 
-    Set the Execution that aws-ranger will enforce [stop, terminate, alert]\n
-    You can limit aws-ranger control to one region.\n
+    Set the Execution that ranger will enforce [stop, terminate, alert]\n
+    You can limit ranger control to one region.\n
     """
     DEFAULT_AWS_PROFILE = ctx[0]
     CONFIG_PATH = ctx[1]
@@ -820,13 +763,13 @@ def cron(ctx, policy, execute, init, stop):
     args = '-r {0} {1} -p {2} -x {3}'.format(region, "cron", policy, execute)
     
     if stop:
-        _kill_process("aws-ranger")
-        _config_cronjob("unset", comment="aws-ranger")
+        _kill_process("ranger")
+        _config_cronjob("unset", comment="ranger")
         _safe_remove(STATE_FILE)
         sys.exit()
     
-    if _find_duplicate_processes("aws-ranger"):
-        print "aws-ranger already running! quiting..."
+    if _find_duplicate_processes("ranger"):
+        print "ranger already running! quiting..."
         sys.exit()
 
     if policy not in ['nightly', 'workweek', 'full']:
@@ -850,12 +793,12 @@ def cron(ctx, policy, execute, init, stop):
                 _config_cronjob("set",
                                 command=CURRENT_FILE,
                                 args=args,
-                                comment="aws-ranger")
+                                comment="ranger")
             else:
                 print "Aborting! you must add schedule section into state file"
                 sys.exit()
         else:
-            print "Creating aws-ranger state file"
+            print "Creating ranger state file"
             update_json_file(STATE_FILE, create_state_dictionary(instances))
             scheduler = Scheduler(config_path=CONFIG_PATH, 
                                   state_file=STATE_FILE)
@@ -864,7 +807,7 @@ def cron(ctx, policy, execute, init, stop):
             _config_cronjob("set",
                             command=CURRENT_FILE,
                             args=args,
-                            comment="aws-ranger")
+                            comment="ranger")
     
     if os.path.isfile(STATE_FILE) and confirm_state_file(STATE_FILE):
         scheduler = Scheduler(config_path=CONFIG_PATH, state_file=STATE_FILE)
@@ -877,5 +820,5 @@ def cron(ctx, policy, execute, init, stop):
                            execute,
                            instances)
     else:
-        print "State file missing or corrupted. run `aws-ranger cron --init`"
+        print "State file missing or corrupted. run `ranger cron --init`"
         sys.exit()
