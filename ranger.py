@@ -380,12 +380,14 @@ class AWSRanger(object):
             region_list.append(region_api_id)
         return region_list
 
-    def fetch_instances(self, region=False):
-        return self.aws_client(region_name=region).instances.filter(Filters=[])
+    def fetch_instances(self, instance_state, region=False):
+        return self.aws_client(region_name=region).instances.filter(
+            Filters=[{'Name': 'instance-state-name', 
+                      'Values': instance_state}])
 
     def get_instances(self,
                       config_path, 
-                      instances_state="running", 
+                      instances_state=["running", "stopped"],
                       region=False):
         all_instances = []
         region_list = []
@@ -405,7 +407,7 @@ class AWSRanger(object):
             instances_list = []
             region_inventory = {}
             
-            instances = self.fetch_instances(region)
+            instances = self.fetch_instances(instances_state, region)
             for instance in instances:
                 instance_dict = {}
                 instance_dict['_ID'] = instance.id
