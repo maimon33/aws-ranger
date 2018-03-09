@@ -28,7 +28,7 @@ HOSTNAME = socket.gethostname()
 try:
     urllib2.urlopen('http://www.google.com', timeout=1)
     PUBLIC_IP = json.load(urllib2.urlopen('http://jsonip.com'))['ip']
-except urllib2.URLError:
+except (urllib2.URLError, socket.timeout):
     PUBLIC_IP = ""
 
 AWS_RANGER_HOME = '{0}/.ranger'.format(USER_HOME)
@@ -310,7 +310,6 @@ def update_instances_state_file(state_file, all_instances_dictionary):
     # Remove Schedule section for state evaluation
     state_dict.pop('_schedule', None)
 
-    
     for region, state_instances_list in state_dict.items():
         for state_instance in state_instances_list:
             try:
@@ -524,15 +523,16 @@ class Scheduler(object):
         workday = date.today() + timedelta(days=1)
         weekend = str(read_json_file_section(
             self.config_file, "Working Hours")["Last Day of the week"])
-        
         thursday = ["Thursday", "Thu"]
         for day in thursday:
             if difflib.SequenceMatcher(None,a=weekend,b=day).ratio() > 0.9:
                 # 4 is Friday and 5 is Saturday
                 weekend = [4, 5]
+                break
             else:
                 # 5 is Saturday and 6 is Sunday
                 weekend = [5, 6]
+                break
             
         while workday.weekday() in weekend:
             workday = workday + timedelta(days=1)
@@ -542,19 +542,22 @@ class Scheduler(object):
     def end_of_week(self):
         today = datetime.now()
         last_day = str(read_json_file_section(
-            self.config_file, "Working Hours")["Last Day of the week"])
-        
+            self.config_file, "Working Hours")["Last Day of the week"])     
         thursday = ["Thursday", "Thu"]
         for day in thursday:
             if difflib.SequenceMatcher(None,a=last_day,b=day).ratio() > 0.9:
                 # 3 for Thursday
                 last_day = 3
+                break
             else:
                 # 4 for Friday
                 last_day = 4
-
+                break
         while today.weekday() != last_day:
-            today = today + timedelta(days=1)
+            if today < self.end_of_day(self.next_weekday()):
+                today = today - timedelta(days=1)
+            else:
+                today = today + timedelta(days=1)
         end_of_week = self.end_of_day(today)
         return end_of_week
     
@@ -566,9 +569,11 @@ class Scheduler(object):
             if difflib.SequenceMatcher(None,a=first_day,b=day).ratio() > 0.9:
                 # 6 for Sunday
                 first_day = 6
+                break
             else:
                 # 0 for Monday
                 first_day = 0
+                break
 
         next_sunday = self.next_weekday()
         while next_sunday.weekday() != first_day:
@@ -576,10 +581,22 @@ class Scheduler(object):
         start_of_week = self.start_of_day(next_sunday)
         return start_of_week
 
-    def get_next_action(self, policy):
+    def get_next_action(self):
+        now = datetime.now()
+        take_five = now + timedelta(minutes=5)
+        if now > self.end_of_week():
+            return ['stop', take_five]
+        elif now < self.start_of_day(self.next_weekday()):
+            return ['stop', take_five]
+        else:
+            return ['start', self.start_of_day(self.next_weekday())]
+
+    def get_next_schedule(self, policy):
         now = datetime.now()
         take_five = now + timedelta(minutes=5)
         if policy == 'full':
+            if now > self.end_of_week():
+                return ['start', self.start_of_day(self.next_weekday())]
             if now < self.start_of_day(now):
                 return ['start', self.start_of_day(now)]
             elif now > self.end_of_day(now):
@@ -587,26 +604,27 @@ class Scheduler(object):
             elif now < self.end_of_day(now):
                 return ['stop', self.end_of_day(now)]
         elif policy == 'nightly':
-            if now > self.end_of_day(now):
-                return ['stop', take_five]
-            elif now < self.start_of_day(now):
-                return ['stop', take_five]
-            else:
+            if now < self.end_of_day(now) and now < self.end_of_week():
                 return ['stop', self.end_of_day(now)]
+            else:
+                return self.get_next_action()
         elif policy == 'workweek':
             if self.end_of_day(now) < now < self.start_of_day(
                                                 self.next_weekday()):
                 return ['stop', take_five]
-            elif now < self.end_of_week():
-                return ['stop', self.end_of_week()]
             else:
-                return ['stop', self.end_of_week()]
+                return self.get_next_action()
 
     def set_schedule_section(self, policy, state_file):
-        next_task = self.get_next_action(policy)
+        next_schedule_task = self.get_next_schedule(policy)
+        next_job = self.get_next_action()
         schedule_info = {'policy': policy, 
-                        'Next Task': next_task[0],
-                        'Time': next_task[1].strftime("%Y-%m-%d %H:%M:%S")}
+                         'Next Job Action': next_job[0],
+                         'Next Job Time': next_job[1].strftime(
+                             "%Y-%m-%d %H:%M:%S"),
+                         'Next Schedule Action': next_schedule_task[0],
+                         'Next Schedule Time': next_schedule_task[1].strftime(
+                             "%Y-%m-%d %H:%M:%S")}
         update_dictionary(state_file, '_schedule', schedule_info)
         return schedule_info
     
@@ -615,6 +633,12 @@ class Scheduler(object):
         if target_convert < datetime.now():
             return True
 
+    def job_scheduler(self, region, instances, policy, execute):
+        # clear _schedule section
+        instances.pop('_schedule', None)
+
+        return create_short_instances_dict(instances, execute)
+    
     def cron_run(self, 
                  profile_name,
                  config_path, 
@@ -627,8 +651,8 @@ class Scheduler(object):
         if _find_duplicate_processes("ranger"):
             sys.exit()
 
+        # Sets the schedule section and return tge dict
         schedule_info = self.set_schedule_section(policy, state_file)
-        update_dictionary(state_file, '_schedule', schedule_info)
 
         # Once cron is configured, This section will execute each run
         if os.path.isfile(state_file):
@@ -636,17 +660,32 @@ class Scheduler(object):
         else:
             update_json_file(state_file, create_state_dictionary(instances))
 
-        instances = read_json_file(state_file)
 
-        next_run = read_json_file_section(state_file, "_schedule")
-        if next_run["Next Task"] == "start":
+        instances = read_json_file(state_file)
+        ranger = AWSRanger(profile_name=profile_name)
+
+        print _format_json(schedule_info)
+
+        # Execute action if job is now. update only job after.
+        
+        if schedule_info["Next Schedule Action"] == "start":
+            actionable_instances = self.job_scheduler(region, 
+                                                      instances, 
+                                                      policy, 
+                                                      execute)
+
+            # find managed instances that are running and set "Next job" with: self.get_next_action(policy)
+            # if self.compare_times(next_run["Next Job"]):
+            #     ranger.executioner(config_path, 
+            #                     instances, 
+            #                     action="stop")
+        if self.compare_times(schedule_info["Next Schedule Time"]):
+            # Execute the scheduled task
             ranger.executioner(config_path, 
                                instances, 
-                               action="stop")
-        if self.compare_times(next_run["Time"]):
-            ranger.executioner(config_path, 
-                               instances, 
-                               action=next_run["Next Task"])
+                               action=schedule_info["Next Schedule Action"])
+            # Update the next schedule task
+            update_dictionary(state_file, '_schedule', schedule_info)
         else:
             sys.exit()
 
