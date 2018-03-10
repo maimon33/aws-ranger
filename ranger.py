@@ -457,7 +457,8 @@ class AWSRanger(object):
                     config_path,
                     instances,
                     region=False,
-                    action="pass"):
+                    action="pass",
+                    cron=False):
         
         tags_list = [{"Key":"ranger Host", 
                       "Value":"{0} @ {1}".format(HOSTNAME, PUBLIC_IP)},
@@ -466,23 +467,33 @@ class AWSRanger(object):
                           action, Time.strftime("%Y-%m-%d %H:%M:%S"))},
                      {"Key":"ranger User",
                       "Value":USERNAME}]
+        
         try:
             if action.lower() == 'stop':
-                stop_dictionary = create_short_instances_dict(
-                    instances, action.lower())
+                if cron:
+                    stop_dictionary = instances
+                else:
+                    stop_dictionary = create_short_instances_dict(
+                        instances, action.lower())
                 for k, v in stop_dictionary.items():
                     self.stop_instnace(v, region=k)
                     self.update_tags(v, tags_list, region=k)
+                    #TODO: update state file
             elif action.lower() == 'start':
-                start_dictionary = create_short_instances_dict(
-                    instances, action.lower())
-                print start_dictionary
+                if cron:
+                    start_dictionary = instances
+                else:
+                    start_dictionary = create_short_instances_dict(
+                        instances, action.lower())
                 for k, v in start_dictionary.items():
                     self.start_instnace(v, region=k)
                     self.update_tags(v, tags_list, region=k)
             elif action.lower() == 'terminate':
-                terminate_dictionary = create_short_instances_dict(
-                    instances, action.lower())
+                if cron:
+                    terminate_dictionary = instances
+                else:
+                    terminate_dictionary = create_short_instances_dict(
+                        instances, action.lower())
                 for k, v in terminate_dictionary.items():
                     self.terminate_instnace(v, region=k)
             elif action == 'pass':
@@ -581,17 +592,17 @@ class Scheduler(object):
         start_of_week = self.start_of_day(next_sunday)
         return start_of_week
 
-    def get_next_action(self):
+    def get_next_action(self, action):
         now = datetime.now()
         take_five = now + timedelta(minutes=5)
         if now > self.end_of_week():
-            return ['stop', take_five]
+            return [action, take_five]
         elif now < self.start_of_day(self.next_weekday()):
-            return ['stop', take_five]
+            return [action, take_five]
         else:
             return ['start', self.start_of_day(self.next_weekday())]
 
-    def get_next_schedule(self, policy):
+    def get_next_schedule(self, policy, action):
         now = datetime.now()
         take_five = now + timedelta(minutes=5)
         if policy == 'full':
@@ -602,22 +613,22 @@ class Scheduler(object):
             elif now > self.end_of_day(now):
                 return ['start', self.start_of_day(self.next_weekday())]
             elif now < self.end_of_day(now):
-                return ['stop', self.end_of_day(now)]
+                return [action, self.end_of_day(now)]
         elif policy == 'nightly':
             if now < self.end_of_day(now) and now < self.end_of_week():
-                return ['stop', self.end_of_day(now)]
+                return [action, self.end_of_day(now)]
             else:
-                return self.get_next_action()
+                return self.get_next_action(action)
         elif policy == 'workweek':
             if self.end_of_day(now) < now < self.start_of_day(
                                                 self.next_weekday()):
-                return ['stop', take_five]
+                return [action, take_five]
             else:
-                return self.get_next_action()
+                return self.get_next_action(action)
 
-    def set_schedule_section(self, policy, state_file):
-        next_schedule_task = self.get_next_schedule(policy)
-        next_job = self.get_next_action()
+    def set_schedule_section(self, policy, action, state_file):
+        next_schedule_task = self.get_next_schedule(policy, action)
+        next_job = self.get_next_action(action)
         schedule_info = {'policy': policy, 
                          'Next Job Action': next_job[0],
                          'Next Job Time': next_job[1].strftime(
@@ -632,12 +643,6 @@ class Scheduler(object):
         target_convert = datetime.strptime(target_time, '%Y-%m-%d %H:%M:%S')
         if target_convert < datetime.now():
             return True
-
-    def job_scheduler(self, region, instances, policy, execute):
-        # clear _schedule section
-        instances.pop('_schedule', None)
-
-        return create_short_instances_dict(instances, execute)
     
     def cron_run(self, 
                  profile_name,
@@ -652,7 +657,7 @@ class Scheduler(object):
             sys.exit()
 
         # Sets the schedule section and return tge dict
-        schedule_info = self.set_schedule_section(policy, state_file)
+        schedule_info = read_json_file_section(state_file, "_schedule")
 
         # Once cron is configured, This section will execute each run
         if os.path.isfile(state_file):
@@ -660,29 +665,29 @@ class Scheduler(object):
         else:
             update_json_file(state_file, create_state_dictionary(instances))
 
-
-        instances = read_json_file(state_file)
+        # Fetch instances from state file and Remove _schedule section
+        state_instances = read_json_file(state_file)
+        state_instances.pop('_schedule', None)
+        
         ranger = AWSRanger(profile_name=profile_name)
 
-        print _format_json(schedule_info)
-
         # Execute action if job is now. update only job after.
-        
         if schedule_info["Next Schedule Action"] == "start":
-            actionable_instances = self.job_scheduler(region, 
-                                                      instances, 
-                                                      policy, 
-                                                      execute)
+            schedule_info["Next Job's Target"] = create_short_instances_dict(
+                state_instances, execute)
+            update_dictionary(state_file, "_schedule", schedule_info)
+            if self.compare_times(schedule_info["Next Job Time"]):
+                ranger.executioner(config_path, 
+                                   schedule_info["Next Job's Target"], 
+                                   action=schedule_info["Next Job Action"],
+                                   cron=True)
+            else:
+                pass
 
-            # find managed instances that are running and set "Next job" with: self.get_next_action(policy)
-            # if self.compare_times(next_run["Next Job"]):
-            #     ranger.executioner(config_path, 
-            #                     instances, 
-            #                     action="stop")
         if self.compare_times(schedule_info["Next Schedule Time"]):
             # Execute the scheduled task
             ranger.executioner(config_path, 
-                               instances, 
+                               state_instances, 
                                action=schedule_info["Next Schedule Action"])
             # Update the next schedule task
             update_dictionary(state_file, '_schedule', schedule_info)
@@ -830,7 +835,7 @@ def cron(ctx, policy, execute, init, stop):
                 scheduler = Scheduler(config_path=CONFIG_PATH, 
                                       state_file=STATE_FILE)
                 update_dictionary(STATE_FILE, '_schedule', "init")
-                scheduler.set_schedule_section(policy, STATE_FILE)
+                scheduler.set_schedule_section(policy, execute, STATE_FILE)
                 _config_cronjob("set",
                                 command=CURRENT_FILE,
                                 args=args,
@@ -844,7 +849,7 @@ def cron(ctx, policy, execute, init, stop):
             scheduler = Scheduler(config_path=CONFIG_PATH, 
                                   state_file=STATE_FILE)
 
-            scheduler.set_schedule_section(policy, STATE_FILE)
+            scheduler.set_schedule_section(policy, execute, STATE_FILE)
             _config_cronjob("set",
                             command=CURRENT_FILE,
                             args=args,
