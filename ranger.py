@@ -686,6 +686,11 @@ class Scheduler(object):
         if not os.path.isfile(state_file):
             update_json_file(state_file, create_state_dictionary(instances))
 
+        # Compare state file to current status
+        update_instances_state_file(state_file, instances)
+
+        #TODO: Update schedule section
+
         # Fetch instances from state file and Remove _schedule section
         state_instances = read_json_file(state_file)
         state_instances.pop('_schedule', None)
@@ -704,6 +709,10 @@ class Scheduler(object):
                                    schedule_info["Next Job's Target"], 
                                    action=schedule_info["Next Job Action"],
                                    cron=True)
+                
+                schedule_info = self.set_schedule_section(policy, 
+                                                          execute, 
+                                                          state_file)
                 schedule_info["Next Job's Target"] = "Nothing to do now"
                 update_dictionary(state_file, "_schedule", schedule_info)
                 try:
@@ -723,7 +732,11 @@ class Scheduler(object):
                                state_file,
                                state_instances, 
                                action=schedule_info["Next Schedule Action"])
+            
             # Update the next schedule task
+            schedule_info = self.set_schedule_section(policy, 
+                                                      execute, 
+                                                      state_file)
             update_dictionary(state_file, '_schedule', schedule_info)
         else:
             sys.exit()
