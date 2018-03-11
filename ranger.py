@@ -221,13 +221,14 @@ def create_short_instances_dict(all_instances_dictionary,
         for instance in region[1]:
             if instance['ranger state'] == "excluded":
                 continue
-
-            if instance['ranger state'] == "managed":
-                managed_instances_ids.append(instance["_ID"])
             
             if instance['State'] == "running" and \
                 instance['ranger state'] != "managed":
                 running_instances_ids.append(instance["_ID"])
+
+            if instance['State'] == "running" and \
+                instance['ranger state'] == "managed":
+                managed_instances_ids.append(instance["_ID"])
 
             if instance['State'] == "stopped" and \
                 instance['ranger state'] != "managed":
@@ -329,11 +330,31 @@ def update_instances_state_file(state_file, all_instances_dictionary):
                 elif instance["State"] == "running":
                     instance['ranger state'] == "managed"
                     instances_list.append(instance)
-                elif instance["State"] == "stopped":
+                elif instance["State"] == "stopped" and \
+                    instance['ranger state'] != "managed":
                     instance['ranger state'] == "ignored"
                     instances_list.append(instance)
         new_state_dict[region] = instances_list
         update_dictionary(state_file, region, new_state_dict[region])
+
+def update_instance_state(state_file, target_instances, key, value):
+    state_dict = read_json_file(state_file)
+
+    # Remove Schedule section for state evaluation
+    schedule_info = state_dict['_schedule']
+    state_dict.pop('_schedule', None)
+
+    for region, state_instances_list in state_dict.items():
+        for state_instance in state_instances_list:
+            for instances in target_instances:
+                if state_instance["_ID"] == instances:
+                    try:
+                        state_instance[key] = value
+                    except KeyError:
+                        pass
+    
+    state_dict['_schedule'] = schedule_info
+    update_json_file(state_file, state_dict)
 
 def update_dictionary(file_path, section, keys_and_values):
     try:
@@ -439,7 +460,7 @@ class AWSRanger(object):
         for instance in instance_list:
             print('Starting instance: {}'.format(instance))
             self.aws_client(region_name=region).instances.filter(
-                InstanceIds=[instance]).start()
+                InstanceIds=[instance]).start() 
 
     def stop_instnace(self, instance_list, region=False):
         for instance in instance_list:
@@ -455,6 +476,7 @@ class AWSRanger(object):
     
     def executioner(self,
                     config_path,
+                    state_file,
                     instances,
                     region=False,
                     action="pass",
@@ -478,7 +500,7 @@ class AWSRanger(object):
                 for k, v in stop_dictionary.items():
                     self.stop_instnace(v, region=k)
                     self.update_tags(v, tags_list, region=k)
-                    #TODO: update state file
+                    update_instance_state(state_file, v, "State", "stopped")
             elif action.lower() == 'start':
                 if cron:
                     start_dictionary = instances
@@ -488,6 +510,7 @@ class AWSRanger(object):
                 for k, v in start_dictionary.items():
                     self.start_instnace(v, region=k)
                     self.update_tags(v, tags_list, region=k)
+                    update_instance_state(state_file, v, "State", "running")
             elif action.lower() == 'terminate':
                 if cron:
                     terminate_dictionary = instances
@@ -659,10 +682,8 @@ class Scheduler(object):
         # Sets the schedule section and return tge dict
         schedule_info = read_json_file_section(state_file, "_schedule")
 
-        # Once cron is configured, This section will execute each run
-        if os.path.isfile(state_file):
-            update_instances_state_file(state_file, instances)
-        else:
+        # Updates State file for first run
+        if not os.path.isfile(state_file):
             update_json_file(state_file, create_state_dictionary(instances))
 
         # Fetch instances from state file and Remove _schedule section
@@ -673,20 +694,33 @@ class Scheduler(object):
 
         # Execute action if job is now. update only job after.
         if schedule_info["Next Schedule Action"] == "start":
-            schedule_info["Next Job's Target"] = create_short_instances_dict(
-                state_instances, execute)
+            actionable_instances = create_short_instances_dict(state_instances, 
+                                                               execute)
+            schedule_info["Next Job's Target"] = actionable_instances
             update_dictionary(state_file, "_schedule", schedule_info)
             if self.compare_times(schedule_info["Next Job Time"]):
                 ranger.executioner(config_path, 
+                                   state_file,
                                    schedule_info["Next Job's Target"], 
                                    action=schedule_info["Next Job Action"],
                                    cron=True)
+                schedule_info["Next Job's Target"] = "Nothing to do now"
+                update_dictionary(state_file, "_schedule", schedule_info)
+                try:
+                    for instance in actionable_instances[1]:
+                        update_instance_state(state_file, 
+                                              instance, 
+                                              "ranger state", 
+                                              "managed")
+                except KeyError:
+                    pass
             else:
                 pass
 
         if self.compare_times(schedule_info["Next Schedule Time"]):
             # Execute the scheduled task
             ranger.executioner(config_path, 
+                               state_file,
                                state_instances, 
                                action=schedule_info["Next Schedule Action"])
             # Update the next schedule task
@@ -750,6 +784,10 @@ def ranger(ctx, init, region, execute):
     
     validate_ranger(AWS_RANGER_HOME, CONFIG_PATH)
     
+    # TODO: 
+    # logger starts here. tries to read the transaction #, increments when
+    # found and later used by the logger 
+    
     ranger = AWSRanger(profile_name=DEFAULT_AWS_PROFILE)
 
     if region == "all":
@@ -760,7 +798,7 @@ def ranger(ctx, init, region, execute):
     if ctx.invoked_subcommand:
         pass
     else:
-        ranger.executioner(CONFIG_PATH, instances, action=execute)
+        ranger.executioner(CONFIG_PATH, STATE_FILE, instances, action=execute)
     
     if ctx.invoked_subcommand is None and not execute:
         print _format_json(instances)
@@ -776,7 +814,6 @@ def ranger(ctx, init, region, execute):
                    'Configures schedule section and policy')
 @click.option('-p',
               '--policy',
-              default="nightly",
               help=' Which policy to enforce?\n '\
                    ' Nightly, Workweek or Full ')
 @click.option('-x',
@@ -819,8 +856,9 @@ def cron(ctx, policy, execute, init, stop):
         sys.exit()
 
     if policy not in ['nightly', 'workweek', 'full']:
-        print "Policy not Found! Review and select one of three"
-        sys.exit()
+        print "Policy not Found! Review and select one of three"\
+        " Selecting 'full'"
+        policy = "full"
 
     if policy.lower() == "full":
         execute = "stop"
