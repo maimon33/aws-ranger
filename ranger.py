@@ -231,7 +231,7 @@ def create_short_instances_dict(all_instances_dictionary,
                 managed_instances_ids.append(instance["_ID"])
 
             if instance['State'] == "stopped" and \
-                instance['ranger state'] != "managed":
+                instance['ranger state'] == "managed":
                 stopped_instances_ids.append(instance["_ID"])
 
         if service:
@@ -362,7 +362,9 @@ def update_dictionary(file_path, section, keys_and_values):
     except ValueError:
         print "Corrupted json file"
         sys.exit()
+    print _format_json(state_file)
     state_file[section] = keys_and_values
+    print _format_json(state_file)
     with open(file_path, 'w') as file:
         json.dump(state_file, file, indent=4, sort_keys=True)
 
@@ -618,51 +620,44 @@ class Scheduler(object):
     def get_next_action(self, action):
         now = datetime.now()
         take_five = now + timedelta(minutes=5)
-        if now > self.end_of_week():
+        if self.start_of_day(self.next_weekday()) > now > self.end_of_week():
             return [action, take_five]
         elif now < self.start_of_day(self.next_weekday()):
             return [action, take_five]
         else:
-            return ['start', self.start_of_day(self.next_weekday())]
+            return ["start", self.start_of_day(self.next_weekday())]
 
-    def get_next_schedule(self, policy, action):
+    def get_next_task(self, policy, action):
         now = datetime.now()
         take_five = now + timedelta(minutes=5)
-        if policy == 'full':
-            if now > self.end_of_week():
-                return ['start', self.start_of_day(self.next_weekday())]
-            if now < self.start_of_day(now):
-                return ['start', self.start_of_day(now)]
-            elif now > self.end_of_day(now):
-                return ['start', self.start_of_day(self.next_weekday())]
-            elif now < self.end_of_day(now):
+        if policy == "full":
+            if self.start_of_day(now) < now < self.end_of_day(now):
                 return [action, self.end_of_day(now)]
-        elif policy == 'nightly':
+            else:
+                return ["start", self.start_of_day(self.next_weekday())]
+        elif policy == "nightly":
             if now < self.end_of_day(now) and now < self.end_of_week():
                 return [action, self.end_of_day(now)]
             else:
                 return self.get_next_action(action)
-        elif policy == 'workweek':
+        elif policy == "workweek":
             if self.end_of_day(now) < now < self.start_of_day(
                                                 self.next_weekday()):
                 return [action, take_five]
             else:
                 return self.get_next_action(action)
 
-    def set_schedule_section(self, policy, action, state_file):
-        next_schedule_task = self.get_next_schedule(policy, action)
-        next_job = self.get_next_action(action)
-        schedule_info = {'policy': policy, 
-                         'Next Job Action': next_job[0],
-                         'Next Job Time': next_job[1].strftime(
-                             "%Y-%m-%d %H:%M:%S"),
-                         'Next Schedule Action': next_schedule_task[0],
-                         'Next Schedule Time': next_schedule_task[1].strftime(
+    def get_schedule_section(self, policy, action, state_file):
+        next_schedule_task = self.get_next_task(policy, action)
+        schedule_info = {"policy": policy,
+                         "Next Schedule Action": next_schedule_task[0],
+                         "Next Schedule Time": next_schedule_task[1].strftime(
                              "%Y-%m-%d %H:%M:%S")}
-        update_dictionary(state_file, '_schedule', schedule_info)
         return schedule_info
     
     def compare_times(self, target_time):
+        if target_time == "None":
+            return False
         target_convert = datetime.strptime(target_time, '%Y-%m-%d %H:%M:%S')
         if target_convert < datetime.now():
             return True
@@ -679,17 +674,19 @@ class Scheduler(object):
         if _find_duplicate_processes("ranger"):
             sys.exit()
 
-        # Sets the schedule section and return tge dict
+        # Sets the schedule section and return the dict
         schedule_info = read_json_file_section(state_file, "_schedule")
-
-        # Updates State file for first run
-        if not os.path.isfile(state_file):
-            update_json_file(state_file, create_state_dictionary(instances))
+        try:
+            if schedule_info["Next Schedule Action"] == "stop":
+                print schedule_info["Next Schedule Action"]
+        except KeyError:
+            schedule_info = self.get_schedule_section(policy,
+                                                      execute,
+                                                      state_file)
+            update_dictionary(state_file, "_schedule", schedule_info)
 
         # Compare state file to current status
         update_instances_state_file(state_file, instances)
-
-        #TODO: Update schedule section
 
         # Fetch instances from state file and Remove _schedule section
         state_instances = read_json_file(state_file)
@@ -699,47 +696,66 @@ class Scheduler(object):
 
         # Execute action if job is now. update only job after.
         if schedule_info["Next Schedule Action"] == "start":
+            job_action = "stop"
             actionable_instances = create_short_instances_dict(state_instances, 
-                                                               execute)
-            schedule_info["Next Job's Target"] = actionable_instances
-            update_dictionary(state_file, "_schedule", schedule_info)
-            if self.compare_times(schedule_info["Next Job Time"]):
-                ranger.executioner(config_path, 
-                                   state_file,
-                                   schedule_info["Next Job's Target"], 
-                                   action=schedule_info["Next Job Action"],
-                                   cron=True)
-                
-                schedule_info = self.set_schedule_section(policy, 
-                                                          execute, 
-                                                          state_file)
-                schedule_info["Next Job's Target"] = "Nothing to do now"
-                update_dictionary(state_file, "_schedule", schedule_info)
-                try:
-                    for instance in actionable_instances[1]:
-                        update_instance_state(state_file, 
-                                              instance, 
-                                              "ranger state", 
-                                              "managed")
-                except KeyError:
-                    pass
+                                                               job_action)
+            if len(actionable_instances) > 0:
+                schedule_info["Next Job's Target"] = actionable_instances
             else:
-                pass
-
-        if self.compare_times(schedule_info["Next Schedule Time"]):
-            # Execute the scheduled task
-            ranger.executioner(config_path, 
-                               state_file,
-                               state_instances, 
-                               action=schedule_info["Next Schedule Action"])
+                schedule_info["Next Job's Target"] = "None"
             
-            # Update the next schedule task
-            schedule_info = self.set_schedule_section(policy, 
-                                                      execute, 
-                                                      state_file)
-            update_dictionary(state_file, '_schedule', schedule_info)
+            update_dictionary(state_file, "_schedule", schedule_info)
         else:
-            sys.exit()
+            job_action = "start"
+            actionable_instances = create_short_instances_dict(state_instances, 
+                                                               job_action)
+        
+        try:
+            if self.compare_times(schedule_info["Next Job Time"]):
+                actionable_instances = create_short_instances_dict(
+                    state_instances, job_action, service=True)
+                
+                ranger.executioner(config_path, 
+                                state_file,
+                                schedule_info["Next Job's Target"], 
+                                action=job_action,
+                                cron=True)
+                
+                for instance in actionable_instances[region]:
+                    update_instance_state(state_file, 
+                                          instance, 
+                                          "ranger state", 
+                                          "managed")
+            else:
+                print "Waiting for Job"
+        
+        except KeyError:
+            print "No Job settings! initiating first job"
+            next_job = self.get_next_action(execute)
+            schedule_info.update({"Next Job Action": next_job[0],
+                                  "Next Job Time": next_job[1].strftime(
+                                      "%Y-%m-%d %H:%M:%S"),
+                                  "Next Job's Target": actionable_instances})
+            update_dictionary(state_file, "_schedule", schedule_info)
+
+        try:
+            if self.compare_times(schedule_info["Next Schedule Time"]):
+                ranger.executioner(config_path, 
+                                state_file,
+                                actionable_instances, 
+                                action=schedule_info["Next Schedule Action"],
+                                cron=True)
+
+                for instance in actionable_instances[region]:
+                    update_instance_state(state_file, 
+                                            instance, 
+                                            "ranger state", 
+                                            "managed")
+            else:
+                print "Waiting for Schedule Task"
+        
+        except KeyError:
+            print "No Task settings!"
 
 
 CLICK_CONTEXT_SETTINGS = dict(
@@ -878,15 +894,17 @@ def cron(ctx, policy, execute, init, stop):
 
     validate_ranger(AWS_RANGER_HOME, CONFIG_PATH)
     
+    scheduler = Scheduler(config_path=CONFIG_PATH, state_file=STATE_FILE)
+    
     if init:
         if os.path.isfile(STATE_FILE):
             if _yes_or_no("State file exists, Do you want to overwrite it?"):
                 _safe_remove(STATE_FILE)
                 update_json_file(STATE_FILE, create_state_dictionary(instances))
-                scheduler = Scheduler(config_path=CONFIG_PATH, 
-                                      state_file=STATE_FILE)
-                update_dictionary(STATE_FILE, '_schedule', "init")
-                scheduler.set_schedule_section(policy, execute, STATE_FILE)
+                schedule_info = scheduler.get_schedule_section(policy,
+                                                               execute,
+                                                               STATE_FILE)
+                update_dictionary(state_file, "_schedule", schedule_info)
                 _config_cronjob("set",
                                 command=CURRENT_FILE,
                                 args=args,
@@ -897,18 +915,16 @@ def cron(ctx, policy, execute, init, stop):
         else:
             print "Creating ranger state file"
             update_json_file(STATE_FILE, create_state_dictionary(instances))
-            scheduler = Scheduler(config_path=CONFIG_PATH, 
-                                  state_file=STATE_FILE)
-
-            scheduler.set_schedule_section(policy, execute, STATE_FILE)
+            schedule_info = scheduler.get_schedule_section(policy,
+                                                           execute,
+                                                           STATE_FILE)
+            update_dictionary(state_file, "_schedule", schedule_info)
             _config_cronjob("set",
                             command=CURRENT_FILE,
                             args=args,
                             comment="ranger")
     
-    if os.path.isfile(STATE_FILE) and confirm_state_file(STATE_FILE):
-        scheduler = Scheduler(config_path=CONFIG_PATH, state_file=STATE_FILE)
-
+    if confirm_state_file(STATE_FILE):
         scheduler.cron_run(DEFAULT_AWS_PROFILE,
                            CONFIG_PATH,
                            STATE_FILE,
