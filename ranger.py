@@ -44,9 +44,6 @@ def _internet_on():
     except (urllib2.URLError, socket.timeout):
         return False
 
-def _return_digits(string_input):
-    return ''.join(i for i in string_input if i.isdigit())
-
 def _safe_remove(target):
     try:
         os.remove(target)
@@ -127,18 +124,7 @@ def validate_ranger(ranger_home, config_path):
               ' ranger --init '
         sys.exit()
 
-def working_hours_converter(target):
-    if target[0].isdigit() and 0 < int(target[0]) < 13:
-        return target
-
-    days = ["Sunday", "Sun", "Monday", "Mon",
-            "Thursday", "Thu", "Friday", "Fri"]
-    for day in days:
-        if difflib.SequenceMatcher(None,a=target.lower(),b=day).ratio() > 0.8:
-            return day
-
 def create_config_file(config_path, profile_name):
-    # wryter = Wryte(name='ranger')
     aws_ranger_config = {}
     email_dictionary = {}
     
@@ -156,36 +142,41 @@ def create_config_file(config_path, profile_name):
 
     # Working Hours
     default_working_hours = {"First Day of the Week": "Sunday",
-                             "Last Day of the week": "Thursday",
-                             "Start of working Day": "9AM",
-                             "End of working Day": "6PM"}
+                             "Last Day of the Week": "Thursday",
+                             "Start of working Day": "9",
+                             "End of working Day": "18"}
     if _yes_or_no('\nDo you agree with these working hours? '\
                   '\n{} '.format(_format_json(default_working_hours))):
         working_hours = default_working_hours
         aws_ranger_config["Working Hours"] = working_hours
     else:
-        first_day = working_hours_converter(
-            raw_input("First Day of the Week? : "))
-        last_day = working_hours_converter(
-            raw_input("\nLast Day of the week? : "))
-        start_of_day = working_hours_converter(
-            raw_input("Start of working day? : "))
-        end_of_day = working_hours_converter(
-            raw_input("End of working day? (12H format) : "))
+        first_day = raw_input("First Day of the Week? [1-Sunday, 2-Monday] ")
+        if first_day == 1:
+            first_day = "Sunday"
+        elif first_day == 2:
+            first_day = "Monday"
+        else:
+            first_day = "Sunday"
+        last_day = raw_input("\nLast Day of the Week? [1-Thursday, 2-Friday] ")
+        if last_day == 1:
+            last_day = "Thursday"
+        elif last == 2:
+            last_day = "Friday"
+        else:
+            last_day = "Thursday"
+        start_of_day = raw_input("Start of working day? : ")
+        end_of_day = raw_input("End of working Day? (24H format) : ")
         
         working_hours = {"First Day of the Week": first_day,
-                         "Last Day of the week": last_day,
-                         "Start of working Day": '{}AM'.format(
-                             start_of_day),
-                         "End of working Day": '{}PM'.format(
-                             end_of_day)}
+                         "Last Day of the Week": last_day,
+                         "Start of working Day": start_of_day,
+                         "End of working Day": end_of_day}
         aws_ranger_config["Working Hours"] = working_hours
 
     # Email section
     email_dictionary['GMAIL_ACCOUNT'] = raw_input("\nGmail account? ")
     email_dictionary['GMAIL_PASSWORD'] = raw_input("Gmail password? ")
-    email_dictionary['DESTINATION_EMAIL'] = raw_input(
-        "Notification Destination? ")
+    email_dictionary['DESTINATION_EMAIL'] = raw_input("Destination? ")
     aws_ranger_config["EMAIL"] = email_dictionary
     
     with open(config_path, 'w') as file:
@@ -226,12 +217,11 @@ def create_short_instances_dict(all_instances_dictionary,
                 instance['ranger state'] != "managed":
                 running_instances_ids.append(instance["_ID"])
 
-            if instance['State'] == "running" and \
+            if instance['State'] in ["running", "stopped"] and \
                 instance['ranger state'] == "managed":
                 managed_instances_ids.append(instance["_ID"])
 
-            if instance['State'] == "stopped" and \
-                instance['ranger state'] == "managed":
+            if instance['State'] == "stopped":
                 stopped_instances_ids.append(instance["_ID"])
 
         if service:
@@ -533,43 +523,35 @@ class Scheduler(object):
 
     def start_of_day(self, day):
         try:
-            start_hour = str(read_json_file_section(
-                self.config_file, "Working Hours")["Start of working Day"])
-            if start_hour.endswith("PM"):
-                start_hour = int(_return_digits(start_hour)) + 12
-            else:
-                start_hour = int(_return_digits(start_hour))
+            start_hour = read_json_file_section(
+                self.config_file, "Working Hours")["Start of working Day"]
+            if start_hour > 23:
+                Start_hour = 9
         except KeyError:
             start_hour = 9
         return  datetime.combine(day, time(start_hour, 00))
 
     def end_of_day(self, day):
         try:
-            end_hour = str(read_json_file_section(
-                self.config_file, "Working Hours")["End of working Day"])
-            if end_hour.endswith("PM"):
-                end_hour = int(_return_digits(end_hour)) + 12
-            else:
-                end_hour = int(_return_digits(end_hour))
+            end_hour = read_json_file_section(
+                self.config_file, "Working Hours")["End of working Day"]
+            if end_hour > 23:
+                end_hour = 18
         except KeyError:
             end_hour = 18
         return  datetime.combine(day, time(end_hour, 00))
 
     def next_weekday(self):
         workday = date.today() + timedelta(days=1)
-        weekend = str(read_json_file_section(
-            self.config_file, "Working Hours")["Last Day of the week"])
-        thursday = ["Thursday", "Thu"]
-        for day in thursday:
-            if difflib.SequenceMatcher(None,a=weekend,b=day).ratio() > 0.9:
-                # 4 is Friday and 5 is Saturday
-                weekend = [4, 5]
-                break
-            else:
-                # 5 is Saturday and 6 is Sunday
-                weekend = [5, 6]
-                break
-            
+        weekend = read_json_file_section(
+            self.config_file, "Working Hours")["Last Day of the week"]
+        if weekend.lower() == "thursday":
+            # 4 is Friday and 5 is Saturday
+            weekend = [4, 5]
+        else:
+            # 5 is Saturday and 6 is Sunday
+            weekend = [5, 6]
+
         while workday.weekday() in weekend:
             workday = workday + timedelta(days=1)
         else:
@@ -577,18 +559,15 @@ class Scheduler(object):
 
     def end_of_week(self):
         today = datetime.now()
-        last_day = str(read_json_file_section(
-            self.config_file, "Working Hours")["Last Day of the week"])     
-        thursday = ["Thursday", "Thu"]
-        for day in thursday:
-            if difflib.SequenceMatcher(None,a=last_day,b=day).ratio() > 0.9:
-                # 3 for Thursday
-                last_day = 3
-                break
-            else:
-                # 4 for Friday
-                last_day = 4
-                break
+        last_day = read_json_file_section(
+            self.config_file, "Working Hours")["Last Day of the week"]
+        if last_day.lower() == "thursday":
+            # 3 for Thursday
+            last_day = 3
+        else:
+            # 4 for Friday
+            last_day = 4
+
         while today.weekday() != last_day:
             if today < self.end_of_day(self.next_weekday()):
                 today = today - timedelta(days=1)
@@ -598,23 +577,19 @@ class Scheduler(object):
         return end_of_week
     
     def start_of_next_week(self):
-        first_day = str(read_json_file_section(
-            self.config_file, "Working Hours")["First Day of the Week"])
-        sunday = ["Sunday", "Sun"]
-        for day in sunday:
-            if difflib.SequenceMatcher(None,a=first_day,b=day).ratio() > 0.9:
-                # 6 for Sunday
-                first_day = 6
-                break
-            else:
-                # 0 for Monday
-                first_day = 0
-                break
+        first_day = read_json_file_section(
+            self.config_file, "Working Hours")["First Day of the Week"]
+        if first_day.lower() == "sunday":
+            # 6 for Sunday
+            first_day = 6
+        else:
+            # 0 for Monday
+            first_day = 0
 
-        next_sunday = self.next_weekday()
-        while next_sunday.weekday() != first_day:
-            next_sunday = next_sunday + timedelta(days=1)
-        start_of_week = self.start_of_day(next_sunday)
+        next_workday = self.next_weekday()
+        while next_workday.weekday() != first_day:
+            next_workday = next_workday + timedelta(days=1)
+        start_of_week = self.start_of_day(next_workday)
         return start_of_week
 
     def get_next_action(self, action):
@@ -709,6 +684,13 @@ class Scheduler(object):
             job_action = "start"
             actionable_instances = create_short_instances_dict(state_instances, 
                                                                job_action)
+            if len(actionable_instances) > 0:
+                schedule_info.update("Next Job Time": next_job[1].strftime(
+                                      "%Y-%m-%d %H:%M:%S"))
+                pass
+            else:
+                pass
+            update_dictionary(state_file, "_schedule", schedule_info)
         
         try:
             if self.compare_times(schedule_info["Next Job Time"]):
