@@ -352,9 +352,7 @@ def update_dictionary(file_path, section, keys_and_values):
     except ValueError:
         print "Corrupted json file"
         sys.exit()
-    print _format_json(state_file)
     state_file[section] = keys_and_values
-    print _format_json(state_file)
     with open(file_path, 'w') as file:
         json.dump(state_file, file, indent=4, sort_keys=True)
 
@@ -529,7 +527,7 @@ class Scheduler(object):
                 Start_hour = 9
         except KeyError:
             start_hour = 9
-        return  datetime.combine(day, time(start_hour, 00))
+        return  datetime.combine(day, time(int(start_hour), 00))
 
     def end_of_day(self, day):
         try:
@@ -539,12 +537,12 @@ class Scheduler(object):
                 end_hour = 18
         except KeyError:
             end_hour = 18
-        return  datetime.combine(day, time(end_hour, 00))
+        return  datetime.combine(day, time(int(end_hour), 00))
 
     def next_weekday(self):
         workday = date.today() + timedelta(days=1)
         weekend = read_json_file_section(
-            self.config_file, "Working Hours")["Last Day of the week"]
+            self.config_file, "Working Hours")["Last Day of the Week"]
         if weekend.lower() == "thursday":
             # 4 is Friday and 5 is Saturday
             weekend = [4, 5]
@@ -560,7 +558,7 @@ class Scheduler(object):
     def end_of_week(self):
         today = datetime.now()
         last_day = read_json_file_section(
-            self.config_file, "Working Hours")["Last Day of the week"]
+            self.config_file, "Working Hours")["Last Day of the Week"]
         if last_day.lower() == "thursday":
             # 3 for Thursday
             last_day = 3
@@ -622,12 +620,25 @@ class Scheduler(object):
             else:
                 return self.get_next_action(action)
 
-    def get_schedule_section(self, policy, action, state_file):
+    def get_schedule_section(self, policy, action):
         next_schedule_task = self.get_next_task(policy, action)
         schedule_info = {"policy": policy,
                          "Next Schedule Action": next_schedule_task[0],
                          "Next Schedule Time": next_schedule_task[1].strftime(
                              "%Y-%m-%d %H:%M:%S")}
+        return schedule_info
+
+    def update_schedule_section(self, policy, action, state_file):
+        next_schedule_task = self.get_next_task(policy, action)
+        next_job = self.get_next_action(action)
+        schedule_info = {"Next Job Action": next_job[0],
+                         "Next Job Time": next_job[1].strftime(
+                             "%Y-%m-%d %H:%M:%S"),
+                         "Next Schedule Action": next_schedule_task[0],
+                         "Next Schedule Time": next_schedule_task[1].strftime(
+                             "%Y-%m-%d %H:%M:%S"),
+                         "policy": policy}
+        update_dictionary(state_file, "_schedule", schedule_info)
         return schedule_info
     
     def compare_times(self, target_time):
@@ -652,12 +663,11 @@ class Scheduler(object):
         # Sets the schedule section and return the dict
         schedule_info = read_json_file_section(state_file, "_schedule")
         try:
-            if schedule_info["Next Schedule Action"] == "stop":
-                print schedule_info["Next Schedule Action"]
+            if schedule_info["Next Schedule Action"]:
+                pass
         except KeyError:
             schedule_info = self.get_schedule_section(policy,
-                                                      execute,
-                                                      state_file)
+                                                      execute)
             update_dictionary(state_file, "_schedule", schedule_info)
 
         # Compare state file to current status
@@ -674,7 +684,7 @@ class Scheduler(object):
             job_action = "stop"
             actionable_instances = create_short_instances_dict(state_instances, 
                                                                job_action)
-            if len(actionable_instances) > 0:
+            if len(actionable_instances[region]) > 0:
                 schedule_info["Next Job's Target"] = actionable_instances
             else:
                 schedule_info["Next Job's Target"] = "None"
@@ -684,19 +694,20 @@ class Scheduler(object):
             job_action = "start"
             actionable_instances = create_short_instances_dict(state_instances, 
                                                                job_action)
-            if len(actionable_instances) > 0:
-                schedule_info.update("Next Job Time": next_job[1].strftime(
-                                      "%Y-%m-%d %H:%M:%S"))
-                pass
+            if len(actionable_instances[region]) > 0:
+                schedule_info.update({"Next Job Action": job_action,
+                                      "Next Job's Target": actionable_instances,
+                                      "Next Job Time": self.get_next_action(
+                    job_action)[1].strftime("%Y-%m-%d %H:%M:%S")})
+                update_dictionary(state_file, "_schedule", schedule_info)
             else:
                 pass
-            update_dictionary(state_file, "_schedule", schedule_info)
         
         try:
             if self.compare_times(schedule_info["Next Job Time"]):
                 actionable_instances = create_short_instances_dict(
                     state_instances, job_action, service=True)
-                
+
                 ranger.executioner(config_path, 
                                 state_file,
                                 schedule_info["Next Job's Target"], 
@@ -708,6 +719,8 @@ class Scheduler(object):
                                           instance, 
                                           "ranger state", 
                                           "managed")
+                
+                self.update_schedule_section(policy, job_action, state_file)
             else:
                 print "Waiting for Job"
         
@@ -733,6 +746,8 @@ class Scheduler(object):
                                             instance, 
                                             "ranger state", 
                                             "managed")
+
+                self.update_schedule_section(policy, job_action, state_file)
             else:
                 print "Waiting for Schedule Task"
         
@@ -884,9 +899,8 @@ def cron(ctx, policy, execute, init, stop):
                 _safe_remove(STATE_FILE)
                 update_json_file(STATE_FILE, create_state_dictionary(instances))
                 schedule_info = scheduler.get_schedule_section(policy,
-                                                               execute,
-                                                               STATE_FILE)
-                update_dictionary(state_file, "_schedule", schedule_info)
+                                                               execute)
+                update_dictionary(STATE_FILE, "_schedule", schedule_info)
                 _config_cronjob("set",
                                 command=CURRENT_FILE,
                                 args=args,
@@ -898,9 +912,8 @@ def cron(ctx, policy, execute, init, stop):
             print "Creating ranger state file"
             update_json_file(STATE_FILE, create_state_dictionary(instances))
             schedule_info = scheduler.get_schedule_section(policy,
-                                                           execute,
-                                                           STATE_FILE)
-            update_dictionary(state_file, "_schedule", schedule_info)
+                                                           execute)
+            update_dictionary(STATE_FILE, "_schedule", schedule_info)
             _config_cronjob("set",
                             command=CURRENT_FILE,
                             args=args,
