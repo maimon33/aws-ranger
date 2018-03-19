@@ -278,7 +278,10 @@ def confirm_state_file(file_path):
         sys.exit()
 
 def read_json_file(json_file):
-    return json.load(open(json_file))
+    try:
+        return json.load(open(json_file))
+    except IOError:
+        return "File Missing"
 
 def update_json_file(file_path, new_dictionary):
     try:
@@ -345,6 +348,9 @@ def update_instance_state(state_file, target_instances, key, value):
     
     state_dict['_schedule'] = schedule_info
     update_json_file(state_file, state_dict)
+
+def remove_instance_from_state(state_file, region, target_instance):
+    pass
 
 def update_dictionary(file_path, section, keys_and_values):
     try:
@@ -490,7 +496,8 @@ class AWSRanger(object):
                 for k, v in stop_dictionary.items():
                     self.stop_instnace(v, region=k)
                     self.update_tags(v, tags_list, region=k)
-                    update_instance_state(state_file, v, "State", "stopped")
+                    if cron:
+                        update_instance_state(state_file, v, "State", "stopped")
             elif action.lower() == 'start':
                 if cron:
                     start_dictionary = instances
@@ -500,7 +507,8 @@ class AWSRanger(object):
                 for k, v in start_dictionary.items():
                     self.start_instnace(v, region=k)
                     self.update_tags(v, tags_list, region=k)
-                    update_instance_state(state_file, v, "State", "running")
+                    if cron:
+                        update_instance_state(state_file, v, "State", "running")
             elif action.lower() == 'terminate':
                 if cron:
                     terminate_dictionary = instances
@@ -509,6 +517,9 @@ class AWSRanger(object):
                         instances, action.lower())
                 for k, v in terminate_dictionary.items():
                     self.terminate_instnace(v, region=k)
+                    if cron:
+                        # remove_instance_from_state(state_file, k, v)
+                        pass
             elif action == 'pass':
                 pass
         except AttributeError:
@@ -642,8 +653,6 @@ class Scheduler(object):
         return schedule_info
     
     def compare_times(self, target_time):
-        if target_time == "None":
-            return False
         target_convert = datetime.strptime(target_time, '%Y-%m-%d %H:%M:%S')
         if target_convert < datetime.now():
             return True
@@ -679,9 +688,43 @@ class Scheduler(object):
         
         ranger = AWSRanger(profile_name=profile_name)
 
-        # Execute action if job is now. update only job after.
         if schedule_info["Next Schedule Action"] == "start":
             job_action = "stop"
+            actionable_instances = create_short_instances_dict(state_instances, 
+                                                               job_action)
+            try:
+                if self.compare_times(schedule_info["Next Job Time"]):
+                    ranger.executioner(config_path, 
+                                       state_file,
+                                       actionable_instances, 
+                                       action=schedule_info["Next jOB Action"],
+                                       cron=True)
+
+                    for instance in actionable_instances[region]:
+                        update_instance_state(state_file, 
+                                              instance, 
+                                              "ranger state", 
+                                              "managed")
+                else:
+                    if len(actionable_instances[region]) > 0:
+                        schedule_info.update(
+                            {"Next Job's Target": actionable_instances})
+                        schedule_info["Next Job's Target"] = actionable_instances
+                    else:
+                        schedule_info["Next Job's Target"] = "None"
+                    
+                    update_dictionary(state_file, "_schedule", schedule_info)
+            
+            except KeyError:
+                schedule_info.update({"Next Job Action": job_action,
+                                      "Next Job's Target": actionable_instances,
+                                      "Next Job Time": self.get_next_action(
+                                          job_action)[1].strftime(
+                                              "%Y-%m-%d %H:%M:%S")})
+                update_dictionary(state_file, "_schedule", schedule_info)
+            
+        else:
+            job_action = "start"
             actionable_instances = create_short_instances_dict(state_instances, 
                                                                job_action)
             if len(actionable_instances[region]) > 0:
@@ -690,37 +733,44 @@ class Scheduler(object):
                 schedule_info["Next Job's Target"] = "None"
             
             update_dictionary(state_file, "_schedule", schedule_info)
-        else:
-            job_action = "start"
-            actionable_instances = create_short_instances_dict(state_instances, 
-                                                               job_action)
-            if len(actionable_instances[region]) > 0:
+
+            try:
+                if self.compare_times(schedule_info["Next Job Time"]):
+                    actionable_instances = create_short_instances_dict(
+                    state_instances, job_action, service=True)
+
+                    ranger.executioner(config_path, 
+                                       state_file,
+                                       schedule_info["Next Job's Target"], 
+                                       action=job_action,
+                                       cron=True)
+                    
+                    for instance in actionable_instances[region]:
+                        update_instance_state(state_file, 
+                                              instance, 
+                                              "ranger state", 
+                                              "managed")
+                    
+                    next_job = self.get_next_action(job_action)
+                    schedule_info.update({"Next Job Action": next_job[0],
+                                          "Next Job Time": next_job[1].strftime(
+                                              "%Y-%m-%d %H:%M:%S"),
+                                          "Next Job's Target": "None"})
+                    update_dictionary(state_file, "_schedule", schedule_info)
+                else:
+                    print "not yet"
+            except KeyError:
+                print "Not Found"
                 schedule_info.update({"Next Job Action": job_action,
                                       "Next Job's Target": actionable_instances,
                                       "Next Job Time": self.get_next_action(
-                    job_action)[1].strftime("%Y-%m-%d %H:%M:%S")})
+                                          job_action)[1].strftime(
+                                              "%Y-%m-%d %H:%M:%S")})
                 update_dictionary(state_file, "_schedule", schedule_info)
-            else:
-                pass
         
         try:
             if self.compare_times(schedule_info["Next Job Time"]):
-                actionable_instances = create_short_instances_dict(
-                    state_instances, job_action, service=True)
-
-                ranger.executioner(config_path, 
-                                state_file,
-                                schedule_info["Next Job's Target"], 
-                                action=job_action,
-                                cron=True)
-                
-                for instance in actionable_instances[region]:
-                    update_instance_state(state_file, 
-                                          instance, 
-                                          "ranger state", 
-                                          "managed")
-                
-                self.update_schedule_section(policy, job_action, state_file)
+                pass
             else:
                 print "Waiting for Job"
         
@@ -743,13 +793,20 @@ class Scheduler(object):
 
                 for instance in actionable_instances[region]:
                     update_instance_state(state_file, 
-                                            instance, 
-                                            "ranger state", 
-                                            "managed")
+                                          instance, 
+                                          "ranger state", 
+                                          "managed")
 
-                self.update_schedule_section(policy, job_action, state_file)
+                next_schedule_task = self.get_next_task(policy, execute)
+                self.update_schedule_section(policy, next_schedule_task[0], state_file)
             else:
                 print "Waiting for Schedule Task"
+                next_schedule_task = self.get_next_task(policy, execute)
+                schedule_info.update(
+                    {"Next Schedule Action": next_schedule_task[0],
+                     "Next Schedule Time": next_schedule_task[1].strftime(
+                         "%Y-%m-%d %H:%M:%S")})
+                update_dictionary(state_file, "_schedule", schedule_info)
         
         except KeyError:
             print "No Task settings!"
