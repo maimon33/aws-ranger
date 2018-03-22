@@ -524,6 +524,8 @@ class AWSRanger(object):
                 pass
         except AttributeError:
             pass
+        except ClientError:
+            pass
 
 class Scheduler(object):
     def __init__(self, config_path, state_file):
@@ -656,6 +658,8 @@ class Scheduler(object):
         target_convert = datetime.strptime(target_time, '%Y-%m-%d %H:%M:%S')
         if target_convert < datetime.now():
             return True
+        else:
+            return False
     
     def cron_run(self, 
                  profile_name,
@@ -697,7 +701,7 @@ class Scheduler(object):
                     ranger.executioner(config_path, 
                                        state_file,
                                        actionable_instances, 
-                                       action=schedule_info["Next jOB Action"],
+                                       action=job_action,
                                        cron=True)
 
                     for instance in actionable_instances[region]:
@@ -709,11 +713,15 @@ class Scheduler(object):
                     if len(actionable_instances[region]) > 0:
                         schedule_info.update(
                             {"Next Job's Target": actionable_instances})
-                        schedule_info["Next Job's Target"] = actionable_instances
+                        
+                        for instance in actionable_instances[region]:
+                            update_instance_state(state_file, 
+                                                  instance, 
+                                                  "State", 
+                                                  "running")
                     else:
                         schedule_info["Next Job's Target"] = "None"
-                    
-                    update_dictionary(state_file, "_schedule", schedule_info)
+                        update_dictionary(state_file, "_schedule", schedule_info)
             
             except KeyError:
                 schedule_info.update({"Next Job Action": job_action,
@@ -731,14 +739,10 @@ class Scheduler(object):
                 schedule_info["Next Job's Target"] = actionable_instances
             else:
                 schedule_info["Next Job's Target"] = "None"
+                update_dictionary(state_file, "_schedule", schedule_info)
             
-            update_dictionary(state_file, "_schedule", schedule_info)
-
             try:
                 if self.compare_times(schedule_info["Next Job Time"]):
-                    actionable_instances = create_short_instances_dict(
-                    state_instances, job_action, service=True)
-
                     ranger.executioner(config_path, 
                                        state_file,
                                        schedule_info["Next Job's Target"], 
@@ -758,47 +762,27 @@ class Scheduler(object):
                                           "Next Job's Target": "None"})
                     update_dictionary(state_file, "_schedule", schedule_info)
                 else:
+                    for instance in actionable_instances[region]:
+                        update_instance_state(state_file, 
+                                              instance, 
+                                              "State", 
+                                              "stopped")
                     print "not yet"
             except KeyError:
-                print "Not Found"
+                print "Setting Job section"
                 schedule_info.update({"Next Job Action": job_action,
                                       "Next Job's Target": actionable_instances,
                                       "Next Job Time": self.get_next_action(
                                           job_action)[1].strftime(
                                               "%Y-%m-%d %H:%M:%S")})
                 update_dictionary(state_file, "_schedule", schedule_info)
-        
-        try:
-            if self.compare_times(schedule_info["Next Job Time"]):
-                pass
-            else:
-                print "Waiting for Job"
-        
-        except KeyError:
-            print "No Job settings! initiating first job"
-            next_job = self.get_next_action(execute)
-            schedule_info.update({"Next Job Action": next_job[0],
-                                  "Next Job Time": next_job[1].strftime(
-                                      "%Y-%m-%d %H:%M:%S"),
-                                  "Next Job's Target": actionable_instances})
-            update_dictionary(state_file, "_schedule", schedule_info)
 
         try:
             if self.compare_times(schedule_info["Next Schedule Time"]):
-                ranger.executioner(config_path, 
-                                state_file,
-                                actionable_instances, 
-                                action=schedule_info["Next Schedule Action"],
-                                cron=True)
-
-                for instance in actionable_instances[region]:
-                    update_instance_state(state_file, 
-                                          instance, 
-                                          "ranger state", 
-                                          "managed")
-
                 next_schedule_task = self.get_next_task(policy, execute)
-                self.update_schedule_section(policy, next_schedule_task[0], state_file)
+                self.update_schedule_section(policy, 
+                                             next_schedule_task[0], 
+                                             state_file)
             else:
                 print "Waiting for Schedule Task"
                 next_schedule_task = self.get_next_task(policy, execute)
@@ -925,9 +909,7 @@ def cron(ctx, policy, execute, init, stop):
     STATE_FILE = ctx[2]
     instances = ctx[3]
     region = ctx[4]
-
-    args = '-r {0} {1} -p {2} -x {3}'.format(region, "cron", policy, execute)
-    
+   
     if stop:
         _kill_process("ranger")
         _config_cronjob("unset", comment="ranger")
@@ -946,6 +928,8 @@ def cron(ctx, policy, execute, init, stop):
     if policy.lower() == "full":
         execute = "stop"
 
+    args = '-r {0} {1} -p {2} -x {3}'.format(region, "cron", policy, execute)
+    
     validate_ranger(AWS_RANGER_HOME, CONFIG_PATH)
     
     scheduler = Scheduler(config_path=CONFIG_PATH, state_file=STATE_FILE)
