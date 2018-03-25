@@ -350,7 +350,24 @@ def update_instance_state(state_file, target_instances, key, value):
     update_json_file(state_file, state_dict)
 
 def remove_instance_from_state(state_file, region, target_instance):
-    pass
+    state_dict = read_json_file(state_file)
+
+    # Remove Schedule section for state evaluation
+    schedule_info = state_dict['_schedule']
+    state_dict.pop('_schedule', None)
+
+    for region, state_instances_list in state_dict.items():
+        for state_instance in state_instances_list:
+            if target_instance == state_instance["_ID"]:
+                state_instances_list.remove(state_instance)
+
+    state_dict['_schedule'] = schedule_info
+    update_json_file(state_file, state_dict)
+
+            # print state_instance["_ID"]
+            # for instances in target_instances:
+            #     if state_instance["_ID"] == instances:
+                    
 
 def update_dictionary(file_path, section, keys_and_values):
     try:
@@ -518,7 +535,7 @@ class AWSRanger(object):
                 for k, v in terminate_dictionary.items():
                     self.terminate_instnace(v, region=k)
                     if cron:
-                        # remove_instance_from_state(state_file, k, v)
+                        remove_instance_from_state(state_file, k, v)
                         pass
             elif action == 'pass':
                 pass
@@ -696,6 +713,7 @@ class Scheduler(object):
             job_action = "stop"
             actionable_instances = create_short_instances_dict(state_instances, 
                                                                job_action)
+            
             try:
                 if self.compare_times(schedule_info["Next Job Time"]):
                     ranger.executioner(config_path, 
@@ -709,6 +727,13 @@ class Scheduler(object):
                                               instance, 
                                               "ranger state", 
                                               "managed")
+                    
+                    next_job = self.get_next_action(job_action)
+                    schedule_info.update({"Next Job Action": next_job[0],
+                                          "Next Job Time": next_job[1].strftime(
+                                              "%Y-%m-%d %H:%M:%S"),
+                                          "Next Job's Target": "None"})
+                    update_dictionary(state_file, "_schedule", schedule_info)
                 else:
                     if len(actionable_instances[region]) > 0:
                         schedule_info.update(
@@ -785,15 +810,14 @@ class Scheduler(object):
                                              state_file)
             else:
                 print "Waiting for Schedule Task"
-                next_schedule_task = self.get_next_task(policy, execute)
-                schedule_info.update(
-                    {"Next Schedule Action": next_schedule_task[0],
-                     "Next Schedule Time": next_schedule_task[1].strftime(
-                         "%Y-%m-%d %H:%M:%S")})
-                update_dictionary(state_file, "_schedule", schedule_info)
         
         except KeyError:
-            print "No Task settings!"
+            next_schedule_task = self.get_next_task(policy, execute)
+            schedule_info.update(
+                {"Next Schedule Action": next_schedule_task[0],
+                 "Next Schedule Time": next_schedule_task[1].strftime(
+                     "%Y-%m-%d %H:%M:%S")})
+            update_dictionary(state_file, "_schedule", schedule_info)
 
 
 CLICK_CONTEXT_SETTINGS = dict(
