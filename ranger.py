@@ -967,6 +967,8 @@ def ranger(ctx, init, accounts, region, execute, table):
 
     if not accounts:
         accounts = [get_current_account_id()]
+    else:
+        accounts = eval(accounts)
 
     for account in accounts:
         if len(accounts) > 1:
