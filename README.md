@@ -70,6 +70,24 @@ $ ranger -r all
     "us-west-2": {}
 }
 ```
+* get current to all regions in table format
+```
+$ ranger -a [YYYYYY,XXXXXX] --table -r all
+Account Summery for YYYYYY
++--------------+----------------+
+|  AWS Region  | # of instances |
++--------------+----------------+
+| EU (Ireland) |       19       |
++--------------+----------------+
+Account Summery for XXXXXX
++----------------+----------------+
+|   AWS Region   | # of instances |
++----------------+----------------+
+|  EU (Ireland)  |       19       |
+| EU (Frankfurt) |       2        |
+| US East (Ohio) |       1        |
++----------------+----------------+
+```
 * terminate instances without protected tags
 ```
 $ ranger -x terminate
