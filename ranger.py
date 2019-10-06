@@ -390,6 +390,9 @@ def assume_aws_role(accountid):
         'Review to origin Creds [IAM role, AWS keys]')
         sys.exit()
 
+def get_current_account_id():
+    return boto3.client('sts').get_caller_identity().get('Account')
+
 class AWSRanger(object):
     def __init__(self, profile_name):
         try:
@@ -962,46 +965,49 @@ def ranger(ctx, init, accounts, region, execute, table):
     if region == "all":
         all_regions = True
 
-    if accounts:
-        for account in eval(accounts):
-            assume_aws_role(account)
-    
-            # TODO: 
-            # logger starts here. tries to read the transaction #, increments when
-            # found and later used by the logger 
-            
-            ranger = AWSRanger(profile_name=DEFAULT_AWS_PROFILE)
+    if not accounts:
+        accounts = [get_current_account_id()]
 
-            if all_regions:
-                region = None
-            
-            instances = {}
-            instances = ranger.get_instances(CONFIG_PATH, region=region)
-            
-            if ctx.invoked_subcommand:
-                pass
-            else:
-                ranger.executioner(CONFIG_PATH, STATE_FILE, instances, action=execute)
-            
-            if ctx.invoked_subcommand is None and not execute:
-                if table:
-                    print "Summery for Account ID: {}".format(account)
-                    x = PrettyTable()
-                    x.field_names = ["AWS Region", "# of instances"]
-                    if all_regions:
-                        for region in ranger.get_all_regions():
-                            if len(instances[region]) > 0:
-                                x.add_row([ranger.convert_region_name(region), len(instances[region])])
-                    else:
+    for account in accounts:
+        if len(accounts) > 1:
+            assume_aws_role(account)
+
+        # TODO: 
+        # logger starts here. tries to read the transaction #, increments when
+        # found and later used by the logger 
+        
+        ranger = AWSRanger(profile_name=DEFAULT_AWS_PROFILE)
+
+        if all_regions:
+            region = None
+        
+        instances = {}
+        instances = ranger.get_instances(CONFIG_PATH, region=region)
+        
+        if ctx.invoked_subcommand:
+            pass
+        else:
+            ranger.executioner(CONFIG_PATH, STATE_FILE, instances, action=execute)
+        
+        if ctx.invoked_subcommand is None and not execute:
+            if table:
+                print "Summery for Account ID: {}".format(account)
+                x = PrettyTable()
+                x.field_names = ["AWS Region", "# of instances"]
+                if all_regions:
+                    for region in ranger.get_all_regions():
                         if len(instances[region]) > 0:
                             x.add_row([ranger.convert_region_name(region), len(instances[region])])
-                        else:
-                            print "Region has no instance"
-                    print x
                 else:
-                    print _format_json(instances)
+                    if len(instances[region]) > 0:
+                        x.add_row([ranger.convert_region_name(region), len(instances[region])])
+                    else:
+                        print "Region has no instance"
+                print x
+            else:
+                print _format_json(instances)
 
-            ctx.obj = [DEFAULT_AWS_PROFILE, CONFIG_PATH, STATE_FILE, instances, region]
+        ctx.obj = [DEFAULT_AWS_PROFILE, CONFIG_PATH, STATE_FILE, instances, region]
 
 @ranger.command('cron')
 @click.pass_obj
