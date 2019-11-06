@@ -932,7 +932,7 @@ def ranger(ctx, init, accounts, region, execute, table):
 
     Scout for Instances in all AWS Regions
     """
-
+    all_regions = False
     if not _internet_on():
         print "No Internet connection"
         sys.exit()
