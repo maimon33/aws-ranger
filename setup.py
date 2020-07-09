@@ -16,7 +16,7 @@ setup(
         'click==6.7',
         'boto3',
         'wryte==0.1.1',
-        'psutil==5.4.3',
+        'psutil==5.6.6',
         'prettytable',
         'python-crontab==2.2.8',
     ]
