@@ -14,7 +14,7 @@ setup(
     },
     install_requires=[
         'click==6.7',
-        'boto3==1.4.4',
+        'boto3',
         'wryte==0.1.1',
         'psutil==5.4.3',
         'prettytable',

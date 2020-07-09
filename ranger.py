@@ -368,6 +368,38 @@ class AWSRanger(object):
             Name='/aws/service/global-infrastructure/regions/{}/longName'.format(
                 region_endpoint))['Parameter']['Value']
 
+    def get_instance_os(self, region, instanceid):
+        instance = self.aws_client(
+            resource=False,
+            region_name=region).describe_instances(Filters=[{'Name': 'instance-id', 'Values': [instanceid]}])
+        instance_ami = instance["Reservations"][0]["Instances"][0]["ImageId"]
+        ami_os = self.aws_client(
+            resource=False,
+            region_name=region).describe_images(Filters=[{'Name': 'image-id', 'Values': [instance_ami]}])
+        try:
+            return ami_os["Images"][0]["PlatformDetails"].split("/")[0]
+        except KeyError:
+            return ami_os["Images"][0]["Name"].split("/")[0]
+    
+    def get_price(self, region, instance, os):
+        FLT = '[{{"Field": "tenancy", "Value": "shared", "Type": "TERM_MATCH"}},'\
+            '{{"Field": "operatingSystem", "Value": "{o}", "Type": "TERM_MATCH"}},'\
+            '{{"Field": "preInstalledSw", "Value": "NA", "Type": "TERM_MATCH"}},'\
+            '{{"Field": "instanceType", "Value": "{t}", "Type": "TERM_MATCH"}},'\
+            '{{"Field": "locationType", "Value": "AWS Region", "Type": "TERM_MATCH"}},'\
+            '{{"Field": "capacitystatus", "Value": "Used", "Type": "TERM_MATCH"}}]'
+
+        f = FLT.format(t=instance, o=os)
+        data = self.aws_client(
+            resource=False, 
+            region_name='us-east-1', 
+            aws_service='pricing').get_products(
+                ServiceCode='AmazonEC2', Filters=json.loads(f))
+        od = json.loads(data['PriceList'][0])['terms']['OnDemand']
+        id1 = list(od)[0]
+        id2 = list(od[id1]['priceDimensions'])[0]
+        return od[id1]['priceDimensions'][id2]['pricePerUnit']['USD']
+
     def fetch_instances(self, instance_state, region=False):
         return self.aws_client(region_name=region).instances.filter(
             Filters=[{'Name': 'instance-state-name', 
@@ -401,6 +433,8 @@ class AWSRanger(object):
                 instance_dict['_ID'] = instance.id
                 instance_dict['State'] = instance.state['Name']
                 instance_dict['Type'] = instance.instance_type
+                instance_cost = self.get_price(region, instance.instance_type, self.get_instance_os(region, instance.id))
+                instance_dict['Cost per hour'] = instance_cost
                 instance_dict['Public DNS'] = instance.public_dns_name
                 instance_dict['Creation Date'] = str(instance.launch_time)
                 instance_dict['ranger state'] = "new"

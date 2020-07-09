@@ -1,4 +1,6 @@
 import json
+import socket
+
 import urllib.request
 
 import psutil
