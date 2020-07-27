@@ -381,7 +381,7 @@ class AWSRanger(object):
         except KeyError:
             return ami_os["Images"][0]["Name"].split("/")[0]
     
-    def get_price(self, region, instance, os):
+    def get_price(self, region, instance_type, os):
         FLT = '[{{"Field": "tenancy", "Value": "shared", "Type": "TERM_MATCH"}},'\
             '{{"Field": "operatingSystem", "Value": "{o}", "Type": "TERM_MATCH"}},'\
             '{{"Field": "preInstalledSw", "Value": "NA", "Type": "TERM_MATCH"}},'\
@@ -389,7 +389,7 @@ class AWSRanger(object):
             '{{"Field": "locationType", "Value": "AWS Region", "Type": "TERM_MATCH"}},'\
             '{{"Field": "capacitystatus", "Value": "Used", "Type": "TERM_MATCH"}}]'
 
-        f = FLT.format(t=instance, o=os)
+        f = FLT.format(t=instance_type, o=os)
         data = self.aws_client(
             resource=False, 
             region_name='us-east-1', 
@@ -429,6 +429,8 @@ class AWSRanger(object):
             
             instances = self.fetch_instances(instances_state, region)
             for instance in instances:
+                print(dir(instance))
+                print(instance.instance_lifecycle)
                 instance_dict = {}
                 instance_dict['_ID'] = instance.id
                 instance_dict['State'] = instance.state['Name']
